@@ -17,4 +17,5 @@ env/
 .vscode/
 
 # Config files (optional, uncomment if you don't want to share)
-# config.ini 
+# config.ini
+config.ini # Actually ignore this file 
