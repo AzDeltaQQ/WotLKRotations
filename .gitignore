@@ -1,0 +1,20 @@
+# Cursor specific files
+.cursorrules
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment folders
+venv/
+.venv/
+env/
+
+# IDE specific files
+.idea/
+.vscode/
+
+# Config files (optional, uncomment if you don't want to share)
+# config.ini 
