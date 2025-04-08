@@ -233,13 +233,13 @@ class WowObject:
                     #print("DEBUG: Max Energy read failed or invalid, using fallback 100", "DEBUG")
 
                 # --- [DEBUG OBJECT UPDATE] ---
-                if self.guid == self.local_player_guid: # Only print for local player
-                    print(f"  [DEBUG OBJ UPDATE] GUID: {self.guid:X}")
-                    print(f"    -> Assigned Health: {self.health}")
-                    print(f"    -> Assigned MaxHealth: {self.max_health}")
-                    print(f"    -> Assigned PowerType: {self.power_type}")
-                    print(f"    -> Assigned Energy/Power (Current): {self.energy} (from addr {current_power_addr:X})")
-                    print(f"    -> Assigned MaxEnergy/Power: {self.max_energy} (from addr {max_power_addr:X})")
+                # if self.guid == self.local_player_guid: # Only print for local player
+                #     print(f"  [DEBUG OBJ UPDATE] GUID: {self.guid:X}")
+                #     print(f"    -> Assigned Health: {self.health}")
+                #     print(f"    -> Assigned MaxHealth: {self.max_health}")
+                #     print(f"    -> Assigned PowerType: {self.power_type}")
+                #     print(f"    -> Assigned Energy/Power (Current): {self.energy} (from addr {current_power_addr:X})")
+                #     print(f"    -> Assigned MaxEnergy/Power: {self.max_energy} (from addr {max_power_addr:X})")
                 # --- [END DEBUG OBJECT UPDATE] ---
 
             else:

@@ -1,10 +1,14 @@
 import os # Needed for checking file existence
 import time # May be needed for delays or GCD tracking
-
-# Project Modules
+import json # For handling potential rule files
 from memory import MemoryHandler
 from object_manager import ObjectManager
-from luainterface import LuaInterface
+# from luainterface import LuaInterface # Old
+from gameinterface import GameInterface # New
+from rules import Rule, ConditionChecker # Import rule processing
+from typing import List, Dict, Any, Optional
+
+# Project Modules
 from wow_object import WowObject # Import for type constants like POWER_RAGE
 
 class CombatRotation:
@@ -12,10 +16,17 @@ class CombatRotation:
     Manages and executes combat rotations, either via loaded Lua scripts
     or a defined set of prioritized rules.
     """
-    def __init__(self, mem: MemoryHandler, om: ObjectManager, lua: LuaInterface):
+    def __init__(self, mem: MemoryHandler, om: ObjectManager, game: GameInterface):
         self.mem = mem
         self.om = om
-        self.lua = lua
+        self.game = game
+        self.condition_checker = ConditionChecker(om) # Initialize condition checker
+        self.rules: List[Rule] = []
+        self.last_rule_execution_time: Dict[int, float] = {} # Store last time a rule (by index) was executed
+        # For Script based rotations
+        self.rotation_script_content: Optional[str] = None
+        self.script_execution_interval = 1.0 # Default: execute script every 1 second
+        self.last_script_execution_time = 0.0
 
         # Rotation State
         self.current_rotation_script_path = None # Path if using a Lua script file
@@ -79,9 +90,9 @@ class CombatRotation:
 
         # --- Fallback to Monolithic Lua Script ---
         elif self.lua_script_content:
-            if not self.lua.is_ready(): return # Need Lua for script execution
+            if not self.game.is_ready(): return # Need Lua for script execution
             # Execute the entire loaded script content
-            self.lua.execute(self.lua_script_content, source_name=os.path.basename(self.current_rotation_script_path or "RotationScript"))
+            self.game.execute(self.lua_script_content, source_name=os.path.basename(self.current_rotation_script_path or "RotationScript"))
             # Note: Timing/GCD for monolithic scripts must be handled *within* the script itself.
 
         # --- No rotation loaded ---
@@ -90,7 +101,7 @@ class CombatRotation:
 
     def _execute_rule_engine(self):
         """Runs the rule-based rotation logic."""
-        if not self.lua.is_ready(): return # Need Lua for actions
+        if not self.game.is_ready(): return # Need Lua for actions
 
         now = time.time()
 
@@ -182,15 +193,15 @@ class CombatRotation:
             elif condition_str == "Is Spell Ready":
                  spell_id = rule.get("spell_id")
                  if not spell_id: return False
-                 # TODO: Call self.lua.get_spell_cooldown(spell_id) and check if ready
+                 # TODO: Call self.game.get_spell_cooldown(spell_id) and check if ready
                  # print(f"DEBUG: Condition 'Is Spell Ready' for {spell_id} - Not Implemented")
                  return True # Placeholder: Assume ready for now
             elif condition_str == "Target Has Debuff":
-                 # TODO: Implement self.lua.unit_has_debuff(target_obj.guid, spell_id_from_condition, ...)
+                 # TODO: Implement self.game.unit_has_debuff(target_obj.guid, spell_id_from_condition, ...)
                  # print(f"DEBUG: Condition 'Target Has Debuff' - Not Implemented")
                  return False # Placeholder: Assume false
             elif condition_str == "Player Has Buff":
-                 # TODO: Implement self.lua.unit_has_buff(player.guid, spell_id_from_condition, ...)
+                 # TODO: Implement self.game.unit_has_buff(player.guid, spell_id_from_condition, ...)
                  # print(f"DEBUG: Condition 'Player Has Buff' - Not Implemented")
                  return False # Placeholder: Assume false
             elif condition_str == "Is Moving":
@@ -227,7 +238,7 @@ class CombatRotation:
             # Note: Requires RunMacroText or similar execute capability
             macro_text = f"/cast [@{wow_target_unitid}] {spell_id}" # Assumes spell ID works in /cast
             # Alternative: Get spell name via lookup and use that? Slower.
-            # spell_name = self.lua.get_spell_name(spell_id) # Needs stable C API
+            # spell_name = self.game.get_spell_name(spell_id) # Needs stable C API
             # if spell_name: macro_text = f"/cast [@{wow_target_unitid}] {spell_name}"
 
             # Choose execution method (simple CastSpellByID often sufficient if target is managed correctly)
@@ -246,7 +257,7 @@ class CombatRotation:
 
             if lua_code:
                  # print(f"ROTATION ACTION: {lua_code}") # Debug Spam
-                 success = self.lua.execute(lua_code, f"Rule_{spell_id}")
+                 success = self.game.execute(lua_code, f"Rule_{spell_id}")
                  return success
 
         # TODO: Add other actions like UseItem(itemId), RunMacroText("/startattack") etc.

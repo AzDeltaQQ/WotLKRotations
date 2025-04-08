@@ -185,8 +185,8 @@ class ObjectManager:
             player_obj.update_dynamic_data(force_update=True) # Force update for player
             self.local_player = player_obj
             # <<< ADDED TEMPORARY DEBUG PRINT >>>
-            print(f"DEBUG: Player Base Address: {hex(self.local_player.base_address)}")
-            print(f"DEBUG: Player UnitFields Address: {hex(self.local_player.unit_fields_address)}")
+            # print(f"DEBUG: Player Base Address: {hex(self.local_player.base_address)}")
+            # print(f"DEBUG: Player UnitFields Address: {hex(self.local_player.unit_fields_address)}")
             # <<< END TEMPORARY DEBUG PRINT >>>
         else:
             self.local_player = None # Player object not found in OM list

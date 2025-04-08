@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, Listbox, Scrollbar, messagebox, filedialog
+from tkinter import ttk, Listbox, Scrollbar, messagebox, filedialog, scrolledtext
 import time
 import os # To list files in Scripts directory
 import configparser # To save/load config
@@ -11,8 +11,10 @@ import traceback # For detailed error logging
 from memory import MemoryHandler
 from object_manager import ObjectManager
 from wow_object import WowObject # Import class for type hinting and constants
-from luainterface import LuaInterface
+from gameinterface import GameInterface
 from combat_rotation import CombatRotation
+from targetselector import TargetSelector
+from rules import Rule, RuleSet
 
 class WowMonitorApp:
     """Main application class for the WoW Monitor and Rotation Engine GUI."""
@@ -29,42 +31,67 @@ class WowMonitorApp:
         self.config.read(self.config_file)
 
         # --- Initialize Core Components ---
-        self.mem = MemoryHandler()
-        if not self.mem.is_attached():
-            self._show_error_and_exit("FATAL ERROR: Wow.exe not found or could not attach.\nPlease start WoW 3.3.5a (12340) first.")
-            return
-
-        self.om = ObjectManager(self.mem)
-        if not self.om.is_ready():
-            self._show_error_and_exit("FATAL ERROR: Could not initialize Object Manager.\nCheck game version/offsets or memory access permissions.")
-            return
-
-        self.lua = LuaInterface(self.mem)
-        # Lua readiness check - allow continuing but warn if C API might fail
-        if not self.lua.is_ready():
-             print("Warning: Lua State pointer issue. Lua C API calls (Spell Info) may fail. Basic Lua execution should still work.", "WARNING")
-             # No need for immediate popup, warning is in log
-
-        self.combat_rotation = CombatRotation(self.mem, self.om, self.lua)
-
-        # --- State Variables ---
+        self.mem = None
+        self.om = None
+        self.game = None
+        self.combat_rotation = None
         self.rotation_running = False
         self.loaded_script_path = None
         self.rotation_rules = [] # GUI's copy of rules for the editor
         self.update_job = None # To store the .after() job ID
         self.is_closing = False # Flag to prevent errors during shutdown
+        self.target_selector = None
 
-        # --- GUI Elements ---
+        # --- WoW Path (Get from config or default) ---
+        self.wow_path = self._get_wow_path()
+        # No need for error check here, connect_and_init_core handles WoW running check
+
+        # --- Initialize GUI Elements ---
         self.setup_gui() # Apply styles *before* creating widgets
 
-        # --- Populate Initial State ---
+        # --- Attempt to Connect and Initialize Core Components ---
+        if not self.connect_and_init_core():
+            # If connection fails, GUI is set up, but updates won't start
+            # Error messages are handled within connect_and_init_core
+            print("Core component initialization failed. Update loop will not start.", "ERROR")
+            # Ensure buttons reflect the disconnected state
+            self._update_button_states()
+            # Keep the GUI running to show the error state
+            return # Stop __init__ here if connection fails
+
+        # --- Populate Initial State (Only if core init succeeded) ---
         self.populate_script_dropdown()
         self._update_button_states() # Set initial button enable/disable state
 
-        # --- Start Update Loop ---
+        # --- Start Update Loop (Only if core init succeeded) ---
         self.update_interval = 300 # milliseconds (Update ~3 times per second)
         print(f"Starting update loop with interval: {self.update_interval}ms", "INFO")
-        self.update_data()
+        self.update_data() # Start the first update
+
+    def _get_wow_path(self):
+        # Tries to read from config.ini, falls back to a default
+        try:
+            if os.path.exists(self.config_file):
+                 self.config.read(self.config_file)
+                 path = self.config.get('Settings', 'WowPath', fallback=None)
+                 if path and os.path.isdir(path):
+                      print(f"Read WowPath from {self.config_file}: {path}", "INFO")
+                      return path
+                 elif path: # Path exists in config but isn't a valid directory
+                      print(f"Warning: WowPath '{path}' in {self.config_file} is not a valid directory.", "WARNING")
+            # Default path if config missing, empty, or invalid
+            default_path = "C:/Users/Jacob/Desktop/World of Warcraft 3.3.5a" # Adjust as needed
+            print(f"Using default WoW path: {default_path}", "INFO")
+            if os.path.isdir(default_path):
+                 return default_path
+            else:
+                 print(f"Error: Default WoW path '{default_path}' is not valid.", "ERROR")
+                 return None
+        except Exception as e:
+            print(f"Error getting WoW path: {e}. Using fallback.", "ERROR")
+            # Hardcoded fallback just in case config reading fails badly
+            fallback_path = "C:/Users/Jacob/Desktop/World of Warcraft 3.3.5a"
+            return fallback_path if os.path.isdir(fallback_path) else None
 
     def _show_error_and_exit(self, message):
         """Displays an error message and schedules window closure."""
@@ -252,7 +279,7 @@ class WowMonitorApp:
         self.notebook.pack(expand=True, fill='both', padx=5, pady=(5, 0))
 
         # Bind close event
-        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     # --- Tab Setup Methods --- (Simplified setup calls, details below)
 
@@ -322,6 +349,9 @@ class WowMonitorApp:
         self.start_button.pack(side=tk.LEFT, padx=5)
         self.stop_button = ttk.Button(button_frame, text="Stop Rotation", command=self.stop_rotation, style='TButton')
         self.stop_button.pack(side=tk.LEFT, padx=5)
+        # --- Add Test Button ---
+        # self.test_execute_button = ttk.Button(button_frame, text="Test Execute", command=self.test_lua_execute, style='TButton')
+        # self.test_execute_button.pack(side=tk.LEFT, padx=(15, 5)) # Add some space before it
 
         # --- Status Display ---
         self.rotation_status_label = ttk.Label(control_frame, text="Status: Stopped", anchor=tk.W)
@@ -441,12 +471,20 @@ class WowMonitorApp:
         log_frame.rowconfigure(0, weight=1)
         log_frame.columnconfigure(0, weight=1)
 
-        self.log_text = tk.Text(log_frame, height=15, width=80, state=tk.DISABLED, **self.log_text_style) # Use manual style
-        self.log_text.grid(row=0, column=0, sticky=tk.NSEW)
+        # Revert to tk.Text and ttk.Scrollbar
+        self.log_text = tk.Text(log_frame, height=20, width=80, state=tk.DISABLED, **self.log_text_style) # Use manual style
+        self.log_text.grid(row=0, column=0, sticky=tk.NSEW, padx=(5,0), pady=5) # Grid layout
 
         log_scrollbar = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview, style='Vertical.TScrollbar')
         self.log_text.configure(yscrollcommand=log_scrollbar.set)
-        log_scrollbar.grid(row=0, column=1, sticky=tk.NS)
+        log_scrollbar.grid(row=0, column=1, sticky=tk.NS, padx=(0,5), pady=5) # Grid layout
+
+        # --- Add Clear Log Button --- below the text widget
+        clear_log_button = ttk.Button(log_frame, text="Clear Log", command=self.clear_log_text)
+        clear_log_button.grid(row=1, column=0, columnspan=2, pady=(0, 5)) # Grid layout, spanning columns
+
+        # Create LogRedirector instance and redirect stdout/stderr
+        log_redirector = LogRedirector(self.log_text)
 
         # Configure tags for log message colors
         for tag_name, config in self.log_tags.items():
@@ -483,18 +521,20 @@ class WowMonitorApp:
         # For now, just update specific known buttons:
         # (Assuming they are created - might need try/except if GUI setup changes)
         try:
-             # Find relevant widgets in editor tab and set state
-             editor_tab = self.notebook.tabs()[2] # Assuming tab index 2 is Editor
-             for widget in editor_tab.winfo_children():
-                  # Disable frames containing editor controls
-                  if isinstance(widget, ttk.Frame): # Main frame, left/right panes
-                       for child in widget.winfo_children():
-                            if isinstance(child, ttk.LabelFrame): # Define Rule, Rule Priority frames
-                                 for sub_child in child.winfo_children():
-                                      if isinstance(sub_child, (ttk.Button, ttk.Entry, ttk.Combobox, tk.Listbox)):
-                                           sub_child.config(state=editor_state)
-                            elif isinstance(child, ttk.Button): # Buttons directly in panes (e.g. List Known IDs)
-                                 child.config(state=editor_state)
+             # Get the actual frame widget for the tab
+             tab_frames = self.notebook.winfo_children()
+             if len(tab_frames) > 2: # Ensure the editor tab frame exists (index 2)
+                  editor_tab = tab_frames[2]
+                  for widget in editor_tab.winfo_children():
+                       # Disable frames containing editor controls
+                       if isinstance(widget, ttk.Frame): # Main frame, left/right panes
+                            for child in widget.winfo_children():
+                                 if isinstance(child, ttk.LabelFrame): # Define Rule, Rule Priority frames
+                                      for sub_child in child.winfo_children():
+                                           if isinstance(sub_child, (ttk.Button, ttk.Entry, ttk.Combobox, tk.Listbox)):
+                                                sub_child.config(state=editor_state)
+                                 elif isinstance(child, ttk.Button): # Buttons directly in panes (e.g. List Known IDs)
+                                      child.config(state=editor_state)
         except Exception as e:
              print(f"Could not update editor button states: {e}", "WARNING")
 
@@ -547,10 +587,19 @@ class WowMonitorApp:
 
 
     def start_rotation(self):
+        # --- Add checks --- #
+        if self.is_closing or not self.mem or not self.mem.is_attached() or not self.om or not self.om.is_ready() or not self.combat_rotation or not self.game or not self.game.is_ready():
+            messagebox.showerror("Error", "Cannot start rotation: Core components not ready or WoW not attached.")
+            print("Cannot start rotation: Core components not ready or WoW not attached.", "ERROR")
+            # Ensure rotation_running is False if we can't start
+            self.rotation_running = False
+            self._update_button_states() # Update buttons to reflect stopped state
+            return
+        # --- Original checks and logic --- #
         if self.rotation_running: return
         if not self.loaded_script_path and not self.rotation_rules:
-            messagebox.showwarning("Start Error", "Cannot start rotation.\nNo script or rules loaded.")
-            print("Cannot start: No script or rules loaded.", "WARNING")
+            messagebox.showwarning("Start Error", "Cannot start rotation.\\nNo script or rules loaded.")
+            print("Cannot start rotation: No script or rules loaded.", "WARNING")
             return
 
         self.rotation_running = True
@@ -567,6 +616,17 @@ class WowMonitorApp:
 
 
     def stop_rotation(self):
+        # --- Add checks for core components (mainly combat_rotation) --- #
+        # Check combat_rotation existence early
+        if self.is_closing or not self.combat_rotation:
+             self.rotation_running = False # Ensure flag is false
+             self._update_button_states() # Update buttons
+             # Optionally update status label if it exists
+             if hasattr(self, 'rotation_status_label'):
+                  self.rotation_status_label.config(text="Status: Stopped (Not Ready)", style='Warning.TLabel')
+             return # Nothing to stop if combat_rotation doesn't exist
+
+        # --- Original checks and logic --- #
         if not self.rotation_running: return
         self.rotation_running = False
         status_text = "Status: Stopped"
@@ -804,88 +864,61 @@ class WowMonitorApp:
 
 
     def lookup_spell_info(self):
-        """Looks up info for a specific spell ID using Lua C API calls via LuaInterface."""
+        """Looks up spell info using direct memory calls and updates labels."""
+        if not self.game or not self.game.is_ready():
+            messagebox.showerror("Error", "GameInterface is not ready. Cannot lookup spell.")
+            return
+
         spell_id_str = self.rule_spell_id_var.get().strip()
         if not spell_id_str.isdigit():
             messagebox.showerror("Input Error", "Please enter a valid Spell ID.")
             return
-
         spell_id = int(spell_id_str)
-        print(f"Looking up Spell ID via Lua C API: {spell_id}", "DEBUG")
 
-        # Check if Lua C API seems ready
-        if not self.lua.is_ready():
-             messagebox.showerror("Lua Error", "Lua C API calls are not available (Lua State pointer issue?). Cannot lookup spell info.")
-             return
+        # --- Display disabled message and reset labels --- #
+        self.spell_name_label.config(text="Name: N/A")
+        self.spell_rank_label.config(text="Rank: N/A")
+        self.spell_casttime_label.config(text="Cast Time: N/A")
+        self.spell_range_label.config(text="Range: Fetching...")
+        self.spell_cooldown_label.config(text="Cooldown: Fetching...")
+        self.root.update_idletasks() # Force GUI update
 
-        # Clear previous info & Update GUI
-        labels_to_clear = [self.spell_name_label, self.spell_rank_label, self.spell_casttime_label, self.spell_range_label, self.spell_cooldown_label]
-        default_texts = ["Name: ...", "Rank: ...", "Cast Time: ...", "Range: ...", "Cooldown: ..."]
-        for label, text in zip(labels_to_clear, default_texts): label.config(text=text)
-        self.root.update_idletasks()
+        # --- Call Direct Functions --- #
+        context = 0
+        if self.om and self.om.local_player:
+            context = self.om.local_player.base_address
+            print(f"Using context pointer for range lookup: {hex(context)}", "DEBUG")
+        else:
+             print("Warning: Local player object not found, using context 0 for range lookup.", "WARNING")
 
-        # --- Attempt calls using call_function ---
-        # This now uses the improved LuaInterface which *should* be more stable.
-        info_results, cd_results, time_result = None, None, None
-        try:
-            info_results = self.lua.call_function(f"return GetSpellInfo({spell_id})", 6)
-            cd_results = self.lua.call_function(f"return GetSpellCooldown({spell_id})", 3)
-            time_result = self.lua.call_function("return GetTime()", 1)
-        except Exception as e:
-             print(f"Error during Lua calls for spell info {spell_id}: {e}", "ERROR")
-             messagebox.showerror("Lua Call Error", f"An error occurred during Lua execution:\n{e}")
-             for label, text in zip(labels_to_clear, ["Name: Error", "Rank: -", "Cast Time: -", "Range: -", "Cooldown: -"]): label.config(text=text)
-             return
+        range_info = self.game.get_spell_range_direct(spell_id, context_ptr=context)
 
-        # --- Process Results ---
-        try:
-            # Process GetSpellInfo
-            if info_results and len(info_results) >= 1 and info_results[0] is not None:
-                s_name, s_rank, _, s_cast, s_min_rng, s_max_rng = (info_results + [None]*6)[:6]
-                self.spell_name_label.config(text=f"Name: {s_name if s_name else 'N/A'}")
-                self.spell_rank_label.config(text=f"Rank: {s_rank if s_rank else 'N/A'}")
-                cast_time_ms = int(s_cast) if isinstance(s_cast, (int, float)) else 0
-                cast_sec = cast_time_ms / 1000.0
-                cast_str = f"{cast_sec:.1f}s" if cast_sec > 0 else "Instant"
-                self.spell_casttime_label.config(text=f"Cast Time: {cast_str}")
-                min_r = float(s_min_rng) if isinstance(s_min_rng, (int, float)) else 0
-                max_r = float(s_max_rng) if isinstance(s_max_rng, (int, float)) else 0
-                self.spell_range_label.config(text=f"Range: {min_r:.0f} - {max_r:.0f} yd")
-            else:
-                print(f"Warning: GetSpellInfo({spell_id}) failed. Result: {info_results}", "WARNING")
-                for label, text in zip(labels_to_clear, ["Name: Failed", "Rank: -", "Cast Time: -", "Range: -", "Cooldown: -"]): label.config(text=text)
-                return # Stop if basic info fails
+        # --- Cooldown ---
+        cooldown_info = self.game.get_spell_cooldown_direct(spell_id)
+        if cooldown_info:
+            is_enabled = cooldown_info.get('enabled', False) # True if spell CD ready (ignores GCD)
+            remaining_cd = cooldown_info.get('remaining', 0.0) # Calculated only if is_enabled is False
 
-            # Process GetSpellCooldown
-            cd_start, cd_dur, cd_enabled = 0.0, 0.0, False
-            if cd_results and len(cd_results) >= 3:
-                cd_start = float(cd_results[0]) if isinstance(cd_results[0], (int, float)) else 0.0
-                cd_dur = float(cd_results[1]) if isinstance(cd_results[1], (int, float)) else 0.0
-                cd_enabled = bool(cd_results[2]) if cd_results[2] is not None else False
-            else: print(f"Warning: GetSpellCooldown({spell_id}) failed. Result: {cd_results}", "WARNING")
+            if not is_enabled: # Spell's own cooldown is active
+                if remaining_cd > 0.01:
+                    cd_text = f"{remaining_cd:.1f}s"
+                    self.spell_cooldown_label.config(text=f"Cooldown: {cd_text}", foreground="orange")
+                else:
+                    # Should not happen if calculation only runs when not enabled, but handle anyway
+                    self.spell_cooldown_label.config(text="Cooldown: Active", foreground="orange")
+            else: # Spell's own cooldown is ready, but GCD might be active
+                self.spell_cooldown_label.config(text="Cooldown: Ready (GCD?)", foreground="green")
+            # print(f"GUI Cooldown Update: ID={spell_id}, Enabled={is_enabled}, Remaining={remaining_cd}", "DEBUG")
+        else:
+            self.spell_cooldown_label.config(text="Cooldown: Error", foreground="red")
+            print(f"GUI Cooldown Update: Failed to get cooldown for {spell_id}", "ERROR")
 
-            # Process GetTime
-            game_time = 0.0
-            if time_result and len(time_result) >= 1:
-                 game_time = float(time_result[0]) if isinstance(time_result[0], (int, float)) else 0.0
-            else: print("Warning: GetTime() failed.", "WARNING")
 
-            # Calculate Cooldown Text
-            cooldown_text = "CD: Unknown"
-            if not cd_enabled: cooldown_text = "CD: Not Usable"
-            elif cd_dur <= 0: cooldown_text = "CD: Ready (No CD)"
-            elif game_time <= 0 or cd_start <= 0: cooldown_text = f"CD: {cd_dur:.1f}s (Full)"
-            else:
-                time_remaining = (cd_start + cd_dur) - game_time
-                if time_remaining <= 0.1: cooldown_text = "CD: Ready"
-                else: cooldown_text = f"CD: {time_remaining:.1f}s left"
-            self.spell_cooldown_label.config(text=cooldown_text)
-            print(f"Finished processing spell info for {spell_id}", "DEBUG")
-
-        except Exception as e:
-            print(f"Error processing Lua results for spell {spell_id}: {e}", "ERROR")
-            messagebox.showerror("Processing Error", f"Failed to process Lua results:\n{e}")
-            for label, text in zip(labels_to_clear, ["Name: Error", "Rank: -", "Cast Time: -", "Range: -", "Cooldown: -"]): label.config(text=text)
+        # --- Update Range Label --- #
+        if range_info:
+            self.spell_range_label.config(text=f"Range: {range_info['maxRange']:.1f} yd")
+        else:
+            self.spell_range_label.config(text="Range: Error")
 
 
     # --- Data Update Loop ---
@@ -906,65 +939,41 @@ class WowMonitorApp:
 
     def update_data(self):
         """Periodically called to refresh data and update GUI elements."""
+        # --- Add checks to prevent errors if core components failed --- #
+        # This check MUST come first
         if self.is_closing: return # Don't run if shutting down
 
+        # Check essential components *before* trying to access them
+        if not self.mem or not self.mem.is_attached() or not self.om or not self.om.is_ready():
+            # If not attached/ready, try to reconnect/reinitialize? Or just wait?
+            # For now, just update status and reschedule without doing work.
+            try: # Protect GUI updates
+                self.player_label.config(text="Player: DISCONNECTED / NOT READY", style='Error.TLabel')
+                self.target_label.config(text="Target: DISCONNECTED / NOT READY", style='Error.TLabel')
+                # Clear the object list if disconnected
+                if hasattr(self, 'tree'): # Check if tree exists
+                    for item in self.tree.get_children():
+                        self.tree.delete(item)
+            except tk.TclError: pass # Ignore if GUI elements are destroyed during closing
+            except AttributeError: pass # Ignore if labels don't exist yet
+
+            if self.rotation_running: # Stop rotation if disconnected
+                print("Stopping rotation due to disconnect/uninitialized state.", "WARNING")
+                self.stop_rotation()
+
+            # Reschedule the check if not explicitly closing
+            if not self.is_closing:
+                self.update_job = self.root.after(self.update_interval, self.update_data) # Try again later
+            return # Exit the current update cycle
+
+        # --- Original update logic starts here --- #
         try:
-             # Schedule next call immediately
+             # Schedule next call immediately (moved from beginning to after checks)
              self.update_job = self.root.after(self.update_interval, self.update_data)
              start_time = time.perf_counter()
 
-             # --- Check Connection & Refresh Core Data ---
-             if not self.mem.is_attached():
-                  self.player_label.config(text="Player: DISCONNECTED", style='Error.TLabel')
-                  self.target_label.config(text="Target: DISCONNECTED", style='Error.TLabel')
-                  if self.rotation_running: self.stop_rotation()
-                  return # Stop update if disconnected
-
+             # --- Refresh Core Data (Now safe to assume mem/om exist) ---
              self.om.refresh() # Updates OM cache, player, target
-
-             # --- Direct Memory Read Test ---
-             player = self.om.local_player # Get player object after refresh
-             if player and player.unit_fields_address:
-                 try:
-                     pm = self.mem # Use the existing MemoryHandler instance
-                     uf_addr = player.unit_fields_address
-                     mana_curr_addr = uf_addr + 0x4C
-                     mana_max_addr = uf_addr + 0x60 # Correct offset for MAXPOWER1
-                     energy_curr_addr = uf_addr + 0x58
-                     energy_max_addr = uf_addr + 0x6C # Correct offset for MAXPOWER3
-
-                     mana_curr_bytes = pm.read_bytes(mana_curr_addr, 4)
-                     mana_max_bytes = pm.read_bytes(mana_max_addr, 4)
-                     energy_curr_bytes = pm.read_bytes(energy_curr_addr, 4)
-                     energy_max_bytes = pm.read_bytes(energy_max_addr, 4)
-
-
-                     mana_curr_val = int.from_bytes(mana_curr_bytes, 'little')
-                     mana_max_val = int.from_bytes(mana_max_bytes, 'little')
-                     energy_curr_val = int.from_bytes(energy_curr_bytes, 'little')
-                     energy_max_val = int.from_bytes(energy_max_bytes, 'little')
-
-
-                     print(f"[DIRECT READ TEST v2] UF: {uf_addr:X}")
-                     print(f"  Mana Curr ({mana_curr_addr:X}): Bytes={mana_curr_bytes.hex()} Value={mana_curr_val}")
-                     print(f"  Mana Max  ({mana_max_addr:X}): Bytes={mana_max_bytes.hex()} Value={mana_max_val}")
-                     print(f"  Energy Curr ({energy_curr_addr:X}): Bytes={energy_curr_bytes.hex()} Value={energy_curr_val}")
-                     print(f"  Energy Max  ({energy_max_addr:X}): Bytes={energy_max_bytes.hex()} Value={energy_max_val}")
-
-
-                     # Also try reading a larger block around the area
-                     block_addr = uf_addr + 0x40 # Start slightly before UNIT_FIELD_HEALTH
-                     try:
-                        block_bytes = pm.read_bytes(block_addr, 48) # Read 48 bytes (covers Health to past Max Energy)
-                        print(f"  Block Read ({block_addr:X}): {block_bytes.hex()}")
-                     except Exception as block_e:
-                        print(f"  Block Read ({block_addr:X}): Error - {block_e}")
-
-
-                 except Exception as e:
-                     print(f"[DIRECT READ TEST v2] Error: {e}")
-             # --- End Direct Memory Read Test ---
-
 
              # --- Update Player Label ---
              if self.om.local_player:
@@ -1045,8 +1054,9 @@ class WowMonitorApp:
              # --- Performance Monitoring ---
              end_time = time.perf_counter()
              update_duration = (end_time - start_time) * 1000
-             if update_duration > self.update_interval:
-                  print(f"Warning: Update loop duration ({update_duration:.0f}ms) exceeded interval ({self.update_interval}ms).", "WARNING")
+             # Optional: Log if update takes too long, but polling is removed
+             # if update_duration > self.update_interval:
+             #      print(f"Warning: Update loop duration ({update_duration:.0f}ms) exceeded interval ({self.update_interval}ms).", "WARNING")
 
         except Exception as e:
             print(f"Unhandled error in update_data loop: {e}", "ERROR")
@@ -1055,11 +1065,11 @@ class WowMonitorApp:
             # if self.rotation_running: self.stop_rotation()
 
 
-    def on_close(self):
-        """Handles window closing action."""
+    def on_closing(self):
+        """Handle window closing event."""
         if self.is_closing: return
         self.is_closing = True # Prevent running again
-        print("Closing application...", "INFO")
+        print("Closing application...")
         # Cancel the scheduled update loop
         if self.update_job:
             self.root.after_cancel(self.update_job)
@@ -1068,8 +1078,73 @@ class WowMonitorApp:
         self._save_config()
         # Add any other cleanup (e.g., close handles if needed)
         # No need to close pymem handle explicitly, it's done on process exit
-        print("Cleanup finished. Exiting.", "INFO")
+        print("Cleanup finished. Exiting.")
         self.root.destroy()
+
+    def connect_and_init_core(self) -> bool:
+        """Attempts to connect to WoW and initialize core components."""
+        print("Attempting to connect to WoW and initialize core components...", "INFO")
+        try:
+            self.mem = MemoryHandler()
+            if not self.mem.is_attached():
+                messagebox.showerror("Connection Error", f"Failed to attach to {PROCESS_NAME}. Is WoW running?")
+                print(f"Failed to attach to {PROCESS_NAME}.", "ERROR")
+                # Update GUI to show disconnected state
+                if hasattr(self, 'player_label'): self.player_label.config(text="Player: FAILED TO ATTACH", style='Error.TLabel')
+                if hasattr(self, 'target_label'): self.target_label.config(text="Target: FAILED TO ATTACH", style='Error.TLabel')
+                return False
+
+            # If memory attached, initialize others
+            self.om = ObjectManager(self.mem)
+            if not self.om.is_ready():
+                 # OM might fail if pointers are bad even if attached
+                 messagebox.showerror("Initialization Error", "Memory attached, but failed to initialize Object Manager.\nCheck game version/offsets.")
+                 print("Object Manager initialization failed.", "ERROR")
+                 return False
+
+            # Pass self.om when creating GameInterface
+            self.game = GameInterface(self.mem, self.om)
+            if not self.game.is_ready():
+                 messagebox.showerror("Initialization Error", "Memory attached, but failed to initialize GameInterface.\nCheck game version/offsets.")
+                 print("GameInterface initialization failed.", "ERROR")
+                 return False
+
+            self.combat_rotation = CombatRotation(self.mem, self.om, self.game)
+            self.target_selector = TargetSelector(self.om)
+
+            print("Successfully connected and initialized core components.", "INFO")
+            # Update GUI status labels if they exist already
+            if hasattr(self, 'player_label'): self.player_label.config(text="Player: Initializing...", style='Info.TLabel')
+            if hasattr(self, 'target_label'): self.target_label.config(text="Target: Initializing...", style='Info.TLabel')
+            return True
+
+        except Exception as e:
+            error_msg = f"An unexpected error occurred during core initialization: {type(e).__name__}: {e}"
+            print(error_msg, "ERROR")
+            traceback.print_exc()
+            messagebox.showerror("Fatal Initialization Error", error_msg)
+            # Ensure core components are None if init fails
+            self.mem = None
+            self.om = None
+            self.game = None
+            self.combat_rotation = None
+            if hasattr(self, 'player_label'): self.player_label.config(text="Player: INIT FAILED", style='Error.TLabel')
+            if hasattr(self, 'target_label'): self.target_label.config(text="Target: INIT FAILED", style='Error.TLabel')
+            return False
+
+    def clear_log_text(self):
+        """Clears all text from the log ScrolledText widget."""
+        if hasattr(self, 'log_text'):
+            try:
+                self.log_text.config(state='normal') # Enable writing
+                self.log_text.delete('1.0', tk.END) # Delete all content
+                self.log_text.config(state='disabled') # Disable writing again
+            except tk.TclError as e:
+                 # Handle error if widget is destroyed during clear
+                 print(f"Error clearing log text (widget likely destroyed): {e}", "WARNING")
+            except Exception as e:
+                 print(f"Unexpected error clearing log text: {e}", "ERROR")
+                 traceback.print_exc()
 
 # --- Log Redirector Class ---
 class LogRedirector:
@@ -1124,20 +1199,19 @@ class LogRedirector:
 
 # --- Main Execution ---
 if __name__ == "__main__":
+    # Ensure PROCESS_NAME is defined globally or imported if needed here
+    try:
+        from memory import PROCESS_NAME # Import it specifically for the error message
+    except ImportError:
+        PROCESS_NAME = "Wow.exe" # Fallback if import fails
+
     root = tk.Tk()
     app = None # Define app outside try block for finally clause
     try:
         app = WowMonitorApp(root)
-        # Only run mainloop if initialization was successful enough to show GUI
-        if app.mem.is_attached() and app.om.is_ready():
-            root.mainloop()
-        else:
-            # Error already shown by _show_error_and_exit
-            print("Exiting due to initialization failure.", "ERROR")
-            # Keep the error window open briefly if root wasn't destroyed
-            if root.winfo_exists():
-                 root.after(3500, root.destroy) # Give time to read error msg box
-                 root.mainloop() # Keep GUI alive for the message box
+        # The mainloop is now started unconditionally,
+        # but update_data only runs if connect_and_init_core succeeded.
+        root.mainloop()
 
     except Exception as e:
          print(f"Unhandled exception during application startup: {type(e).__name__}: {e}", "ERROR")
@@ -1153,7 +1227,12 @@ if __name__ == "__main__":
          except:
              os._exit(1) # Force exit if everything fails
     finally:
+         # Redirect output back to console before final cleanup attempts
+         # This prevents errors if the log widget is already destroyed
+         sys.stdout = sys.__stdout__
+         sys.stderr = sys.__stderr__
+         
          # Ensure cleanup runs even if mainloop exits unexpectedly
          if app and not app.is_closing:
               print("Application exited unexpectedly, attempting cleanup...", "WARNING")
-              app.on_close()
+              app.on_closing()
