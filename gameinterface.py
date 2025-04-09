@@ -147,7 +147,7 @@ class GameInterface:
     def receive_response(self, buffer_size: int = PIPE_BUFFER_SIZE, timeout_s: float = 5.0) -> Optional[str]:
         """Receives a response string from the DLL via the pipe. (Blocking with simple timeout)"""
         if not self.is_ready():
-            print("[GameInterface] Cannot receive response: Pipe not connected.")
+            # print("[GameInterface] Cannot receive response: Pipe not connected.") # Reduce log spam
             return None
 
         # NOTE: Implementing robust non-blocking reads or using PeekNamedPipe is more complex.
@@ -171,23 +171,32 @@ class GameInterface:
                 None # Not overlapped
             )
             
+            # Check timeout *after* the blocking call returns or fails
             if time.time() - start_time > timeout_s:
                  print(f"[GameInterface] Receive timeout ({timeout_s}s) exceeded.")
-                 return None # Timeout
+                 # It's possible ReadFile returned *after* the timeout, so still check success/bytes_read
+                 # If ReadFile genuinely timed out internally (less common for blocking pipes),
+                 # success might be false or bytes_read 0.
 
             if not success or bytes_read.value == 0:
                 error_code = GetLastError()
                 # ERROR_BROKEN_PIPE is expected if DLL closes connection
-                if error_code != 109: # ERROR_BROKEN_PIPE
+                # ERROR_MORE_DATA (234) might occur if buffer too small
+                # ERROR_OPERATION_ABORTED (995) might happen on disconnects
+                # ERROR_IO_PENDING (997) shouldn't happen with non-overlapped
+                # ERROR_PIPE_LISTENING (536) - server waiting for connection (shouldn't happen here)
+                if error_code not in [109]: # ERROR_BROKEN_PIPE
+                     # Only log error if it's not a standard broken pipe
                      print(f"[GameInterface] Failed to read response from pipe. Success: {success}, Read: {bytes_read.value}, Error: {error_code}")
-                else:
-                     print("[GameInterface] Pipe broken during receive (client/server disconnected).")
+                # else: # Don't spam console for normal disconnects
+                     # print("[GameInterface] Pipe broken during receive (client/server disconnected).")
                 self.disconnect_pipe() # Disconnect on error/broken pipe
                 return None
 
             # Null-terminate the received data just in case
             buffer[bytes_read.value] = b'\0'
-            response = buffer.value.decode('utf-8', errors='ignore')
+            # Decode using utf-8, replace errors to avoid crashes on malformed data
+            response = buffer.value.decode('utf-8', errors='replace')
             # print(f"[GameInterface] Received: {response}") # Debug print
             return response
 
@@ -238,7 +247,8 @@ class GameInterface:
         if response:
             print(f"[GameInterface] Ping response: '{response}'")
             # Check if response indicates success (e.g., contains "pong" or "Received: ping")
-            return "ping" in response.lower() or "pong" in response.lower() 
+            # Let's standardize on a simple "PONG" response from DLL
+            return response is not None and "PONG" in response.upper() 
         else:
             print("[GameInterface] No response to ping.")
             return False
@@ -248,30 +258,63 @@ class GameInterface:
     def get_spell_cooldown(self, spell_id: int) -> Optional[dict]:
         """
         Gets spell cooldown information by sending a command to the DLL.
-        Example command: "GET_CD:<spell_id>"
-        DLL should respond with formatted data (e.g., "CD:<start>,<duration>,<enabled>")
+        Uses the game's internal GetSpellCooldown via Lua.
+        Command: "GET_CD:<spell_id>"
+        Response: "CD:<start_ms>,<duration_ms>,<enabled_int>" (enabled_int=1 if usable, 0 if on CD)
+                   or "CD_ERR:Not found" or similar on failure.
         """
         command = f"GET_CD:{spell_id}"
-        response = self.send_receive(command)
+        response = self.send_receive(command, timeout_s=1.0) # Faster timeout for frequent calls
+
         if response and response.startswith("CD:"):
-             try:
-                 parts = response.split(':')[1].split(',')
-                 if len(parts) == 3:
-                     start_time = int(parts[0])
-                     duration = int(parts[1])
-                     enabled = bool(int(parts[2])) # Expect 0 or 1
-                     
-                     # Calculate remaining (requires getting game time from DLL?)
-                     # Placeholder: Need "GET_TIME" command or include time in response
-                     remaining = 0.0 
-                     
-                     return {"startTime": start_time, "duration": duration, "enabled": enabled, "remaining": remaining}
-                 else:
-                      print(f"[GameInterface] Invalid CD response format: {response}")
-             except (ValueError, IndexError) as e:
-                  print(f"[GameInterface] Error parsing CD response '{response}': {e}")
-        else:
-             print(f"[GameInterface] Failed to get cooldown for {spell_id} or invalid response: {response}")
+            try:
+                parts = response.split(':')[1].split(',')
+                if len(parts) == 3:
+                    start_ms = int(parts[0])
+                    duration_ms = int(parts[1])
+                    # Lua GetSpellCooldown returns 'enabled' (1 if usable/ready, nil/0 if not)
+                    # Our DLL maps this to 1 or 0. We will recalculate readiness below.
+                    # lua_enabled_int = int(parts[2]) # We don't strictly need this anymore
+
+                    is_ready = True # Assume ready unless proven otherwise
+                    remaining_ms = 0
+
+                    # Fetch current game time - crucial for calculation
+                    current_game_time_ms = self.get_game_time_millis()
+
+                    if current_game_time_ms is None:
+                        print("[GameInterface] Warning: Could not get current game time for cooldown calculation. Assuming not ready.")
+                        # If we can't get time, we can't reliably check cooldown.
+                        # Default to 'not ready' if duration/start indicate it *might* be on CD.
+                        is_ready = not (duration_ms > 0 and start_ms > 0) # Guess based on non-zero values
+                        remaining_ms = -1 # Indicate unknown remaining time
+                    elif duration_ms > 0 and start_ms > 0:
+                        # Only calculate if duration and start time suggest a cooldown is active
+                        end_time_ms = start_ms + duration_ms
+                        if current_game_time_ms < end_time_ms:
+                            is_ready = False
+                            remaining_ms = end_time_ms - current_game_time_ms
+                        else:
+                            is_ready = True # Cooldown finished
+                            remaining_ms = 0
+                    # else: # If duration is 0 or start_ms is 0, it's ready
+                         # is_ready remains True, remaining_ms remains 0
+
+                    return {
+                        "startTime": start_ms / 1000.0, # Seconds
+                        "duration": duration_ms,        # Milliseconds
+                        "isReady": is_ready,            # Calculated readiness
+                        "remaining": remaining_ms / 1000.0 if remaining_ms >= 0 else -1.0 # Seconds or -1
+                    }
+                else:
+                    print(f"[GameInterface] Invalid CD response format: {response}")
+            except (ValueError, IndexError, TypeError) as e:
+                print(f"[GameInterface] Error parsing CD response '{response}': {e}")
+        elif response and response.startswith("CD_ERR"):
+            # print(f"[GameInterface] Cooldown query for {spell_id} failed: {response}") # Debug
+            pass # Silently fail if DLL reports error
+        # else: # Reduce spam for non-responses or timeouts
+             # print(f"[GameInterface] Failed to get cooldown for {spell_id} or invalid/no response: {response}")
         return None
 
     def get_spell_range(self, spell_id: int) -> Optional[dict]:
@@ -316,23 +359,29 @@ class GameInterface:
         return None
 
     # --- Add method to get game time --- 
-    def get_game_time(self) -> Optional[float]:
+    def get_game_time_millis(self) -> Optional[int]:
         """
-        Gets the current in-game time by sending a GET_TIME command to the DLL.
-        DLL should respond with "TIME:seconds.fraction"
+        Gets the current in-game time in milliseconds by sending a GET_TIME_MS command.
+        DLL should respond with "TIME:<milliseconds>"
         """
-        command = "GET_TIME"
-        response = self.send_receive(command, timeout_s=1.0) # Use shorter timeout for time
+        command = "GET_TIME_MS"
+        response = self.send_receive(command, timeout_s=0.5) # Use short timeout for time
         if response and response.startswith("TIME:"):
             try:
                 time_str = response.split(':')[1]
-                game_time_seconds = float(time_str)
-                return game_time_seconds
+                game_time_ms = int(time_str)
+                return game_time_ms
             except (ValueError, IndexError, TypeError) as e:
-                 print(f"[GameInterface] Error parsing GET_TIME response '{response}': {e}")
-        else:
-             print(f"[GameInterface] Failed to get game time or invalid response: {response}")
+                 print(f"[GameInterface] Error parsing GET_TIME_MS response '{response}': {e}")
+        # else: # Reduce spam
+            # print(f"[GameInterface] Failed to get game time ms or invalid response: {response}")
         return None
+
+    # --- Deprecated get_game_time, use get_game_time_millis instead ---
+    # def get_game_time(self) -> Optional[float]:
+    #     """ Gets the current in-game time in seconds (float). DEPRECATED: Use get_game_time_millis."""
+    #     ms = self.get_game_time_millis()
+    #     return ms / 1000.0 if ms is not None else None
 
     # --- Removed old direct memory/shellcode functions ---
     # _allocate_memory, _free_memory, _write_memory, _read_memory
@@ -369,12 +418,16 @@ if __name__ == "__main__":
                  print("Failed to send Lua command.")
                  
             print("\n--- Testing Get Cooldown (Example Spell ID) ---")
-            test_spell_id_cd = 1752 # Holy Light Rank 1
-            cd_info = game.get_spell_cooldown(test_spell_id_cd)
-            if cd_info:
-                print(f"Cooldown Info for {test_spell_id_cd}: {cd_info}")
+            test_spell_id_cd = 6673 # Redemption Rank 1 (Paladin) - Example with CD
+            if game.is_ready(): # Only test if pipe connected
+                cd_info = game.get_spell_cooldown(test_spell_id_cd)
+                if cd_info:
+                    status = "Ready" if cd_info['isReady'] else f"On Cooldown ({cd_info['remaining']:.1f}s left)"
+                    print(f"Cooldown Info for {test_spell_id_cd}: Status={status}, Start={cd_info['startTime']}, Duration={cd_info['duration']}ms")
+                else:
+                    print(f"Failed to get cooldown info for {test_spell_id_cd} (or no response/error from DLL).")
             else:
-                print(f"Failed to get cooldown info for {test_spell_id_cd}.")
+                 print("Skipping Cooldown test: Pipe not connected.")
 
             print("\n--- Testing Get Range (Example Spell ID) ---")
             test_spell_id_range = 1752
@@ -385,14 +438,28 @@ if __name__ == "__main__":
                 print(f"Failed to get range info for {test_spell_id_range}.")
 
             print("\n--- Testing Is In Range (Example) ---")
-            is_in_range = game.is_spell_in_range(test_spell_id_range, "target")
-            if is_in_range is not None:
-                # Simplify the f-string
-                status_str = 'Yes' if is_in_range == 1 else ('No' if is_in_range == 0 else 'Unknown')
-                print(f"Is Spell {test_spell_id_range} in range of 'target'? {status_str}")
+            test_spell_id_range = 1752 # Holy Light Rank 1
+            if game.is_ready(): # Only test if pipe connected
+                is_in_range = game.is_spell_in_range(test_spell_id_range, "target")
+                if is_in_range is not None:
+                    # Simplify the f-string
+                    status_str = 'Yes' if is_in_range == 1 else ('No' if is_in_range == 0 else 'Unknown')
+                    print(f"Is Spell {test_spell_id_range} in range of 'target'? {status_str}")
+                else:
+                    print(f"Failed to check range for {test_spell_id_range} (or no response/error from DLL).")
             else:
-                print(f"Failed to check range for {test_spell_id_range}.")
+                 print("Skipping Range Check test: Pipe not connected.")
 
+            # --- Test Game Time ---
+            print("\n--- Testing Get Game Time (Milliseconds) ---")
+            if game.is_ready():
+                gt_ms = game.get_game_time_millis()
+                if gt_ms is not None:
+                    print(f"Current Game Time: {gt_ms} ms ({gt_ms / 1000.0:.2f} s)")
+                else:
+                    print("Failed to get game time (or no response/error from DLL).")
+            else:
+                 print("Skipping Get Time test: Pipe not connected.")
 
             game.disconnect_pipe()
         else:

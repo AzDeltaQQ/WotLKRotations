@@ -587,7 +587,7 @@ DWORD WINAPI IPCThread(LPVOID lpParam) {
     */
     // --- End Removed Security Attributes Setup ---
 
-    // Create the named pipe
+    // Create the named pipe *once* when the thread starts
     // --- Revert Pipe Name and Max Instances, Remove Security Attributes --- 
     g_hPipe = CreateNamedPipeW(
         L"\\\\.\\pipe\\WowInjectPipe",      // Pipe name (WCHAR*) - FIXED BACKSLASHES
@@ -610,14 +610,30 @@ DWORD WINAPI IPCThread(LPVOID lpParam) {
         //OutputDebugStringA("[WoWInjectDLL] Failed to create named pipe!\n"); // Original message commented out
         return 1;
     }
-    OutputDebugStringA("[WoWInjectDLL] Pipe created. Waiting for client connection...\n");
+    OutputDebugStringA("[WoWInjectDLL] Pipe created. Entering main connection loop.\n");
 
-    // Wait for the client to connect
-    if (ConnectNamedPipe(g_hPipe, NULL) ? TRUE : (GetLastError() == ERROR_PIPE_CONNECTED)) {
-        OutputDebugStringA("[WoWInjectDLL] Client connected.\n");
+    // --- Outer loop to wait for connections repeatedly --- 
+    while (!g_bShutdown) 
+    { 
+        OutputDebugStringA("[WoWInjectDLL] Waiting for client connection...\n");
+        // Wait for the client to connect
+        BOOL connected = ConnectNamedPipe(g_hPipe, NULL); 
+        if (!connected && GetLastError() != ERROR_PIPE_CONNECTED) 
+        {
+            char err_buf[128];
+            sprintf_s(err_buf, sizeof(err_buf), "[WoWInjectDLL] ConnectNamedPipe failed. GLE=%d\n", GetLastError());
+            OutputDebugStringA(err_buf);
+            // Optional: Add a small delay before retrying connection? Sleep(1000);
+            continue; // Go back to waiting for a connection if ConnectNamedPipe fails non-standardly
+        }
+        // --- ADDED: Check for shutdown signal *after* potentially blocking ConnectNamedPipe ---
+        if (g_bShutdown) break;
 
-        // --- Communication Loop --- 
-        while (!g_bShutdown) {
+        OutputDebugStringA("[WoWInjectDLL] Client connected. Entering communication loop.\n");
+
+        // --- Inner Communication Loop (Existing Logic) --- 
+        while (!g_bShutdown) 
+        { 
             // --- Read Command --- 
             success = ReadFile(
                 g_hPipe,
@@ -700,15 +716,26 @@ DWORD WINAPI IPCThread(LPVOID lpParam) {
             // Introduce a small delay if no response was sent to prevent busy-waiting?
             // else { Sleep(1); }
 
-        } // End while loop
-    } else {
-        OutputDebugStringA("[WoWInjectDLL] Failed to connect to client.\n");
-    }
+        } // End inner communication loop (while)
 
-    // Cleanup
-    OutputDebugStringA("[WoWInjectDLL] IPC Thread exiting. Closing pipe handle.\n");
+        // --- Client disconnected or error occurred --- 
+        OutputDebugStringA("[WoWInjectDLL] Client disconnected or communication loop ended. Disconnecting server side.\n");
+        // Disconnect the server end to prepare for the next connection attempt
+        if (!DisconnectNamedPipe(g_hPipe)) 
+        {
+            char err_buf[128];
+            sprintf_s(err_buf, sizeof(err_buf), "[WoWInjectDLL] DisconnectNamedPipe failed. GLE=%d\n", GetLastError());
+            OutputDebugStringA(err_buf);
+        }
+        // The outer loop will now iterate and wait for a new connection via ConnectNamedPipe
+
+    } // End outer connection loop (while)
+
+    // Cleanup when g_bShutdown becomes true
+    OutputDebugStringA("[WoWInjectDLL] IPC Thread exiting due to shutdown signal. Closing pipe handle.\n");
     if (g_hPipe != INVALID_HANDLE_VALUE) {
-        DisconnectNamedPipe(g_hPipe); // Disconnect client if connected
+        // Ensure disconnection before closing if somehow still connected
+        DisconnectNamedPipe(g_hPipe); 
         CloseHandle(g_hPipe);
         g_hPipe = INVALID_HANDLE_VALUE;
     }
