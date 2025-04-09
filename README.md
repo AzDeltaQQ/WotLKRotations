@@ -22,9 +22,9 @@ This project uses a two-part architecture:
     *   **Core Logic (`dllmain.cpp`):** Written in C++, compiled into `WowInjectDLL.dll`.
     *   **Detours Hooking:** Uses Microsoft Detours (included in `vendor/Detours`) to hook the game's `EndScene` function (DirectX 9). This provides a reliable execution context within the main game thread.
     *   **Persistent Named Pipe Server:** Creates and manages a named pipe (`\\.\pipe\WowInjectPipe`) that **persists** after client disconnects, allowing the Python GUI to reconnect without reinjecting the DLL.
-    *   **Command Handling:** Parses commands received over the pipe (e.g., `ping`, `EXEC_LUA:<code>`, `GET_TIME_MS`, `GET_CD:<id>`, `IS_IN_RANGE:<id>,<unit>`).
+    *   **Command Handling:** Parses commands received over the pipe (e.g., `ping`, `EXEC_LUA:<code>`, `GET_TIME_MS`, `GET_CD:<id>`, `IS_IN_RANGE:<id>,<unit>`, `GET_SPELL_INFO:<id>`).
     *   **Main Thread Execution:** Queues requests that require interaction with the game's main thread (like executing Lua) and processes them within the hooked `EndScene` function.
-    *   **Lua Interaction:** Uses known function pointers (`offsets.py`) to execute Lua code or interact with the Lua C API (e.g., `GetTime()`, `GetSpellCooldown()`, `IsSpellInRange()`).
+    *   **Lua Interaction:** Uses known function pointers (`offsets.py`) to execute Lua code or interact with the Lua C API (e.g., `GetTime()`, `GetSpellCooldown()`, `IsSpellInRange()`, `GetSpellInfo()`).
     *   **Build System (`CMakeLists.txt`):** Uses CMake to manage the C++ build process, including finding Detours and linking necessary libraries.
 
 ## Current Features
@@ -37,6 +37,7 @@ This project uses a two-part architecture:
 *   **Game Time Retrieval:** Get the current in-game time (in milliseconds) via the DLL (`GET_TIME_MS` command).
 *   **Spell Cooldown Check:** Get spell cooldown status (start, duration, calculated readiness, remaining time) via the DLL (`GET_CD` command) and accurate Python-side calculation.
 *   **Spell Range Check:** Check if a spell is in range of a specific unit (e.g., "target") via the DLL (`IS_IN_RANGE` command).
+*   **Spell Info Lookup:** Retrieve spell details (Name, Rank, Cast Time, Cost, Power Type, Min Range, Icon) via the DLL (`GET_SPELL_INFO` command).
 *   **Rotation Engine:**
     *   Load and run simple Lua rotation scripts (`Scripts/` folder).
     *   Define and run prioritized, condition-based rotation rules via the GUI Editor tab.
@@ -103,7 +104,7 @@ This project uses a two-part architecture:
 *   Offsets in `offsets.py` are critical and specific to WoW 3.3.5a (12340).
 *   Error handling can be improved in both Python and C++ components.
 *   The C++ DLL relies on Detours for hooking; ensure the build process correctly links it.
-*   The DLL now handles interaction with core Lua functions like `GetSpellCooldown`, `IsSpellInRange`, and `GetTime`, providing more reliable data than direct memory reads for these values.
+*   The DLL now handles interaction with core Lua functions like `GetSpellCooldown`, `IsSpellInRange`, `GetTime`, and `GetSpellInfo`, providing more reliable data than direct memory reads for these values.
 *   Rotation logic is currently basic; complex conditions and actions may require more sophisticated Lua interaction or direct memory manipulation within the DLL.
 
 ## Current Features (as of initial commit):
