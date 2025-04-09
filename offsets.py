@@ -43,37 +43,11 @@ WOW_GETGLOBALSTRINGVARIABLE = 0x00818010 # WoW helper: getglobal(L, s, char** re
 # --- Confirmed Constants (3.3.5a 12340) ---
 LUA_GLOBALSINDEX = -10002 # Pseudo-index for _G (0xFFFFD8EE in hex representation)
 
-# --- UNCONFIRMED / INCORRECT Offsets (Commented Out) ---
-# These need verification or finding for the specific target client version.
-# LUA_GETGLOBAL_OLD = 0x0084E200 # Incorrect for 3.3.5a (points inside getThreadIdIfExists)
-# LUA_GETFIELD_OLD = 0x0084E1C0 # Incorrect for 3.3.5a (points to getFrameScriptOffset)
-# LUA_SETFIELD_OLD = 0x0084E5A0 # Falls inside custom WoW_SETFIELD
-# LUA_SETGLOBAL = 0 # Needs verification (0x0084E5E0 might be related/wrong)
-# LUA_CALL = 0 # Needs verification (0x0084EBE0 might be related/wrong)
-# LUA_POP = 0 # Needs verification (0x0084DC10 incorrect, use LUA_SETTOP instead)
-# LUA_PUSHNIL = 0 # Needs verification (0x0084DF90 incorrect)
-# LUA_PUSHINTEGER_OLD = 0 # Needs verification (0x0084DFF0 incorrect)
-# LUA_PUSHNUMBER_OLD = 0 # Needs verification (0x0084E010 incorrect)
-# LUA_TOBOOLEAN = 0 # Needs verification (0x0044E2C0 incorrect)
-# LUA_NEXT = 0 # Needs verification (0x0084E850 maybe?)
-
-
 # --- Game Specific Functions (Examples - Need Verification) ---
 # These are likely dynamic or different in other versions
 # SPELL_C_GET_SPELL_COOLDOWN = 0x00807980 # C func for GetSpellCooldown? (Unverified Signature)
 # SPELL_C_GET_SPELL_RANGE = 0x0080AB40    # C func for GetSpellRange? (Unverified Signature)
-# GET_GAME_TIME_MS = 0x004F4870           # Function GetTime()? Returns float seconds? (Needs Verification)
 
-
-# --- Global Cooldown (GCD) Related (Example - Needs Verification) ---
-# LIST_HEAD_BASE = 0x00C7BCD8     # Example base address for spell cooldown categories list head
-# GCD_CATEGORY_ID = 1            # Example ID for the Global Cooldown category
-# # Offsets within the cooldown linked list node structure
-# OFFSET_NEXT_NODE = 0x00        # Offset to the pointer to the next node
-# OFFSET_PREV_NODE = 0x04        # Offset to the pointer to the previous node
-# OFFSET_START_TIME = 0x1C       # Example offset to cooldown start time (ms?)
-# OFFSET_GCD_DURATION = 0x20     # Example offset to cooldown duration (ms?)
-# OFFSET_FLAGS = 0x31            # Example offset to flags byte (0x1=Active?)
 
 # Client Connection and Object Manager
 STATIC_CLIENT_CONNECTION = 0x00C79CE0
