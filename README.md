@@ -50,7 +50,7 @@ This project uses a two-part architecture:
 *   **C++ Compiler:** A compiler that supports C++17 (e.g., Visual Studio Community Edition with "Desktop development with C++" workload, including the MSVC compiler and Windows SDK).
 *   **Microsoft Detours:** Included in the `vendor/Detours` directory. No separate installation needed, but requires the C++ compiler to build the DLL which uses it.
 *   **WoW Client:** Specifically version 3.3.5a (build 12340). Offsets are hardcoded for this version.
-*   **DLL Injector:** A standard DLL injection tool (e.g., Process Hacker, Xenos Injector, etc.) to load `WowInjectDLL.dll` into the `Wow.exe` process.
+*   **DLL Injector:** A standard DLL injection tool (e.g., Process Hacker, Xenos Injector, Extreme Injector, Cheat Engine, etc.) to load `WowInjectDLL.dll` into the `Wow.exe` process.
 
 ## Setup & Usage
 
