@@ -11,11 +11,40 @@ __pycache__/
 venv/
 .venv/
 env/
+ENV/
 
 # IDE specific files
 .idea/
 .vscode/
 
-# Config files (optional, uncomment if you don't want to share)
-# config.ini
-config.ini # Actually ignore this file 
+# Config files (User specific - provide example instead)
+config.ini 
+
+# C++ Build Artifacts (CMake/MSVC)
+build/
+**/Debug/
+**/Release/
+**/x64/
+**/Win32/
+**/CMakeFiles/
+*.CMake/
+CMakeCache.txt
+cmake_install.cmake
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+*.suo
+*.obj
+*.pdb
+*.ilk
+*.pch
+# *.dll  <- Explicitly NOT ignoring based on user request, but recommended to ignore later
+*.lib
+*.exp
+*.sdf
+*.user
+
+# Other temp/log files
+*.log
+*~ 

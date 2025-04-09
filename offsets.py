@@ -8,18 +8,22 @@ LUA_STATE_PTR = 0xD430AC # Pointer to the main Lua state (Needs confirmation for
 OBJECT_MANAGER_PTR = 0 # TODO: Find Object Manager pointer offset
 CUR_OBJECT_MANAGER = 0xB47980 # Offset to current object manager static pointer? (Needs confirmation)
 
-# --- Confirmed Lua C API Functions (3.3.5a 12340 - User Analysis) ---
-LUA_GETTOP = 0x0084DBD0    # lua_gettop(L) -> int
-LUA_SETTOP = 0x0084DBF0    # lua_settop(L, index) -> void
-LUA_PUSHSTRING = 0x0084E350 # lua_pushstring(L, s) -> void
-LUA_PUSHINTEGER = 0x0084E2D0 # lua_pushinteger(L, n) -> void (Confirmed Correct)
-LUA_PUSHNUMBER = 0x0084E2A0  # lua_pushnumber(L, n) -> void (Confirmed Correct)
-LUA_TOLSTRING = 0x0084E0E0  # lua_tolstring(L, index, len) -> const char*
-LUA_TONUMBER = 0x0084E030   # lua_tonumber(L, index) -> lua_Number (double)
-LUA_TOINTEGER = 0x0084E070  # lua_tointeger(L, index) -> lua_Integer (int)
-LUA_TYPE = 0x0084DEB0       # lua_type(L, index) -> int (type ID)
-LUA_PCALL = 0x0084EC50      # lua_pcall(L, nargs, nresults, errfunc) -> int (status)
-LUA_LOADBUFFER = 0x0084F860 # lua_loadbuffer(L, buff, sz, name) -> int (status)
+# --- Confirmed Lua C API Functions (3.3.5a 12340 - User Verified List 2024-07-15) ---
+LUA_GETTOP = 0x0084DBD0    # lua_gettop(L) -> int (Updated)
+LUA_SETTOP = 0x0084DBF0    # lua_settop(L, index) -> void (Verified)
+LUA_PUSHSTRING = 0x0084E350 # lua_pushstring(L, s) -> void (Verified)
+LUA_PUSHINTEGER = 0x0084E2D0 # lua_pushinteger(L, n) -> void (Verified)
+LUA_PUSHNUMBER = 0x0084E2A0  # lua_pushnumber(L, n) -> void (Seems correct, not on list but standard)
+LUA_TOLSTRING = 0x0084E0E0  # lua_tolstring(L, index, len) -> const char* (Updated)
+LUA_TONUMBER = 0x0084E030   # lua_tonumber(L, index) -> lua_Number (double) (Updated)
+LUA_TOINTEGER = 0x0084E070  # lua_tointeger(L, index) -> lua_Integer (int) (Verified)
+LUA_TYPE = 0x0084DEB0       # lua_type(L, index) -> int (type ID) (Seems correct, not on list but standard)
+LUA_PCALL = 0x0084EC50    # lua_pcall(L, nargs, nresults, errfunc) -> int (Verified)
+# LUA_GETTABLE = 0x0084E0E0    # lua_gettable(L, index) -> void (Commented out - Conflicts with LUA_TOLSTRING)
+LUA_PUSHBOOLEAN = 0x0084E4D0 # lua_pushboolean(L, b) -> void (From List: FrameScript_pushboolean)
+LUA_PUSHCCLOSURE = 0x0084E400 # lua_pushcclosure(L, fn, n) -> void (From List: FrameScript_pushcclosure)
+LUA_TOBOOLEAN = 0x0044E2C0   # lua_toboolean(L, index) -> int (From List: FrameScript_toboolean)
+TOCFUNCTION = 0x0084E1C0 # lua_tocfunction(L, index) -> lua_CFunction (From List: FrameScript_tocfunction)
 
 # --- Effective lua_getglobal Sequence Start (3.3.5a 12340) ---
 # Calling this sequence directly seems to cause crashes (0x84E200). Reverting to manual lookup.
@@ -29,10 +33,10 @@ LUA_LOADBUFFER = 0x0084F860 # lua_loadbuffer(L, buff, sz, name) -> int (status)
 # We call this address directly after pushing our C args (L, name_ptr).
 # LUA_GETGLOBAL = 0x00818020  # Sequence start (xor edi, edi) after helper pushes - COMMENTED OUT - Causes crash?
 
-# --- WoW Custom / Modified Functions (3.3.5a 12340 - User Analysis) ---
-LUA_GETFIELD_BY_STACK_KEY = 0x0084E600 # WoW specific: getfield(L, index) - expects key on Lua stack
-FRAMESCRIPT_EXECUTE = 0x00819210      # WoW func: FrameScript_Execute(code, source, 0)
-WOW_SETFIELD = 0x0084E590             # WoW specific: setfield(L, index, key) - custom implementation
+# --- WoW Custom / Modified Functions (3.3.5a 12340 - User Verified List 2024-07-15) ---
+LUA_GETFIELD_BY_STACK_KEY = 0x0084F3B0 # WoW specific: getfield(L, index) - expects key on Lua stack (Updated from FrameScript_getfield)
+FRAMESCRIPT_EXECUTE = 0x00819210      # WoW func: FrameScript_Execute(code, source, 0) (Verified)
+WOW_SETFIELD = 0x0084E900             # WoW specific: setfield(L, index, key) - custom implementation (From List: FrameScript_setfield)
 LUA_RAWGET_HELPER = 0x00854510        # WoW C impl for rawget() Lua func
 WOW_GETGLOBALSTRINGVARIABLE = 0x00818010 # WoW helper: getglobal(L, s, char** result) -> bool
 

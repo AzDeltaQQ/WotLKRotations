@@ -349,9 +349,12 @@ class WowMonitorApp:
         self.start_button.pack(side=tk.LEFT, padx=5)
         self.stop_button = ttk.Button(button_frame, text="Stop Rotation", command=self.stop_rotation, style='TButton')
         self.stop_button.pack(side=tk.LEFT, padx=5)
-        # --- Add Test Button ---
-        # self.test_execute_button = ttk.Button(button_frame, text="Test Execute", command=self.test_lua_execute, style='TButton')
-        # self.test_execute_button.pack(side=tk.LEFT, padx=(15, 5)) # Add some space before it
+        # --- Add Test Lua Print Button --- 
+        self.test_lua_button = ttk.Button(button_frame, text="Test Lua Print", command=self.test_lua_print, style='TButton')
+        self.test_lua_button.pack(side=tk.LEFT, padx=(15, 5)) # Add some space before it
+        # --- Add Test GetTime Button --- 
+        self.test_time_button = ttk.Button(button_frame, text="Test GetTime", command=self.test_get_time, style='TButton')
+        self.test_time_button.pack(side=tk.LEFT, padx=5)
 
         # --- Status Display ---
         self.rotation_status_label = ttk.Label(control_frame, text="Status: Stopped", anchor=tk.W)
@@ -886,46 +889,63 @@ class WowMonitorApp:
         # --- Call Lua Function for Name/Rank --- #
         try:
             print(f"Calling GetSpellInfo via pcall for SpellID {spell_id}", "DEBUG")
-            # GetSpellInfo returns: name, rank, icon, cost, isFunnel, powerType, castTime, minRange, maxRange
-            name_rank_result = self.game.call_lua_function(
+            # GetSpellInfo returns: name[0], rank[1], icon[2], cost[3], isFunnel[4], powerType[5], castTime[6], minRange[7], maxRange[8]
+            spell_info_result = self.game.call_lua_function(
                 lua_func_name="GetSpellInfo",
                 args=[spell_id],
-                return_types=['string', 'string'] # Only need first two results
+                # Request all 9 return values (but comment out boolean)
+                return_types=[
+                    'string', 'string', 'string', 'number', #'boolean',
+                    'number', 'number', 'number', 'number'
+                ]
             )
         except TypeError as te:
             print(f"Error during Lua call for Name/Rank: {te}", "ERROR")
-            import traceback
-            traceback.print_exc()
+            # import traceback # Keep commented unless needed
+            # traceback.print_exc()
+            spell_info_result = None # Ensure it's None on error
         except Exception as e:
             print(f"Error during Lua call for Name/Rank: {type(e).__name__} - {e}", "ERROR")
+            spell_info_result = None # Ensure it's None on error
 
-        if name_rank_result and len(name_rank_result) == 2:
-            name, rank = name_rank_result
+
+        # Update Name and Rank labels using correct indices
+        if spell_info_result and len(spell_info_result) >= 2: # Need at least Name and Rank
+            # Use index 0 for Name, index 1 for Rank
+            name = spell_info_result[0]
+            rank = spell_info_result[1]
             self.spell_name_label.config(text=f"Name: {name if name else 'Not Found'}")
             self.spell_rank_label.config(text=f"Rank: {rank if rank else 'N/A'}")
         else:
-            print(f"Failed to get Name/Rank for SpellID {spell_id} via Lua call.", "ERROR")
+            print(f"Failed to get Name/Rank for SpellID {spell_id} via Lua call. Result: {spell_info_result}", "ERROR") # Log the result
             self.spell_name_label.config(text="Name: Lua Error")
             self.spell_rank_label.config(text="Rank: Lua Error")
+
+        # Optionally update other labels if data is available
+        if spell_info_result and len(spell_info_result) >= 9:
+             cast_time = spell_info_result[6]
+             min_range = spell_info_result[7]
+             max_range = spell_info_result[8]
+             # Note: Range is overwritten later by is_spell_in_range, this is just for info
+             self.spell_casttime_label.config(text=f"Cast Time: {cast_time if cast_time is not None else 'N/A'}")
+             # self.spell_range_label.config(text=f"Range: {min_range:.1f}-{max_range:.1f}" if min_range is not None and max_range is not None else "Range: N/A")
 
         # --- Call Direct Functions for Range/Cooldown --- #
         # Initialize results
         range_result = None
         cooldown_result = None
 
-        # Fetch Spell Range using direct call (for now)
-        try:
-            # context = 0
-            # if self.game.om and self.game.om.local_player:
-            #      context = self.game.om.local_player.base_address
-            # print(f"Using context pointer for range lookup: {hex(context)}", "DEBUG")
-            # range_info = self.game._get_spell_range_direct_legacy(spell_id, context) # Use legacy
-            print(f"Calling Lua IsSpellInRange for SpellID {spell_id}", "DEBUG")
-            range_result = self.game.is_spell_in_range(spell_id) # Use new Lua version
-
-        except Exception as e:
-            print(f"Error during Range call for SpellID {spell_id}: {e}", "ERROR")
-            # traceback.print_exc()
+        # Fetch Spell Range ONLY if a target exists
+        if self.om and self.om.target:
+            try:
+                print(f"Calling Lua IsSpellInRange for SpellID {spell_id} (Target exists)", "DEBUG")
+                range_result = self.game.is_spell_in_range(spell_id) # Use new Lua version
+            except Exception as e:
+                print(f"Error during Range call for SpellID {spell_id}: {e}", "ERROR")
+                # traceback.print_exc()
+        else:
+            print(f"Skipping Lua IsSpellInRange for SpellID {spell_id} (No target)", "DEBUG")
+            range_result = None # Explicitly None if no target
 
         # Fetch Spell Cooldown using direct call
         try:
@@ -1160,20 +1180,35 @@ class WowMonitorApp:
                  print("Object Manager initialization failed.", "ERROR")
                  return False
 
-            # Pass self.om when creating GameInterface
-            self.game = GameInterface(self.mem, self.om)
-            if not self.game.is_ready():
-                 messagebox.showerror("Initialization Error", "Memory attached, but failed to initialize GameInterface.\nCheck game version/offsets.")
-                 print("GameInterface initialization failed.", "ERROR")
-                 return False
+            # Initialize Game Interface (IPC based)
+            self.game = GameInterface(self.mem)
+
+            # --- Attempt Pipe Connection --- 
+            print("Attempting to connect to DLL via Named Pipe...", "INFO")
+            if not self.game.connect_pipe():
+                messagebox.showerror("Pipe Connection Error", 
+                                     "Failed to connect to the injected DLL via Named Pipe.\n\n"
+                                     "- Is the correct DLL injected?\n"
+                                     "- Did the DLL start the pipe server correctly?\n"
+                                     "- Is the pipe name matching ('\\.\\pipe\\WowInjectPipe')?")
+                print("Failed to connect to DLL via Named Pipe. GameInterface will not be fully functional.", "ERROR")
+                # Decide: Return False to halt everything, or allow limited functionality?
+                # For now, let's allow it to continue but log the error.
+                # return False 
+            else:
+                 print("Successfully connected to DLL via Named Pipe.", "INFO")
+                 # Optional: Test ping immediately after connection?
+                 # if not self.game.ping_dll():
+                 #     print("Warning: Connected to pipe, but initial ping failed.", "WARNING")
 
             self.combat_rotation = CombatRotation(self.mem, self.om, self.game)
             self.target_selector = TargetSelector(self.om)
 
             print("Successfully connected and initialized core components.", "INFO")
+
             # Update GUI status labels if they exist already
             if hasattr(self, 'player_label'): self.player_label.config(text="Player: Initializing...", style='Info.TLabel')
-            if hasattr(self, 'target_label'): self.target_label.config(text="Target: Initializing...", style='Info.TLabel')
+            if hasattr(self, 'target_label'): self.target_label.config(text="Target: None", style='Warning.TLabel')
             return True
 
         except Exception as e:
@@ -1203,6 +1238,48 @@ class WowMonitorApp:
             except Exception as e:
                  print(f"Unexpected error clearing log text: {e}", "ERROR")
                  traceback.print_exc()
+
+    # --- Add Test Lua Print Method ---
+    def test_lua_print(self):
+        """Sends a simple Lua print command via the pipe for testing."""
+        if not self.game or not self.game.is_ready():
+            messagebox.showerror("Error", "GameInterface not connected. Cannot send Lua command.")
+            print("Test Lua Print failed: GameInterface not ready.", "ERROR")
+            return
+        
+        lua_code = "print('Hello from Python via Injected DLL!')"
+        print(f"Sending test Lua command: {lua_code}", "DEBUG")
+        success = self.game.execute(lua_code)
+        if success:
+            print("Test Lua command sent successfully.", "INFO")
+            # The actual confirmation is seeing the message in WoW chat.
+            # Use triple quotes for the multi-line message
+            messagebox.showinfo("Lua Test", f"""Sent Lua print command.
+
+Check your WoW chat window for the message:
+'{lua_code}'""")
+        else:
+            print("Failed to send test Lua command via pipe.", "ERROR")
+            messagebox.showerror("Lua Test Error", "Failed to send the Lua command via the pipe.\nCheck DLL logs/status.")
+
+    # --- Add Test GetTime Method ---
+    def test_get_time(self):
+        """Calls the get_game_time method and displays the result."""
+        if not self.game or not self.game.is_ready():
+            messagebox.showerror("Error", "GameInterface not connected. Cannot get time.")
+            print("Test GetTime failed: GameInterface not ready.", "ERROR")
+            return
+        
+        print("Sending GET_TIME command...", "DEBUG")
+        game_time = self.game.get_game_time()
+        
+        if game_time is not None:
+            print(f"Received game time: {game_time:.3f} seconds", "INFO")
+            messagebox.showinfo("GetTime Test", f"Current Game Time: {game_time:.3f} seconds")
+        else:
+            print("Failed to get game time via pipe.", "ERROR")
+            messagebox.showerror("GetTime Test Error", "Failed to get game time via the pipe.\nCheck DLL logs/status.")
+
 
 # --- Log Redirector Class ---
 class LogRedirector:
