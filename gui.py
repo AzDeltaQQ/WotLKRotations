@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, Listbox, Scrollbar, messagebox, filedialog, scrolledtext
+from tkinter import ttk, Listbox, Scrollbar, messagebox, filedialog, scrolledtext, simpledialog
 import time
 import os # To list files in Scripts directory
 import configparser # To save/load config
@@ -349,12 +349,15 @@ class WowMonitorApp:
         self.start_button.pack(side=tk.LEFT, padx=5)
         self.stop_button = ttk.Button(button_frame, text="Stop Rotation", command=self.stop_rotation, style='TButton')
         self.stop_button.pack(side=tk.LEFT, padx=5)
-        # --- Add Test Lua Print Button --- 
-        self.test_lua_button = ttk.Button(button_frame, text="Test Lua Print", command=self.test_lua_print, style='TButton')
-        self.test_lua_button.pack(side=tk.LEFT, padx=(15, 5)) # Add some space before it
-        # --- Add Test GetTime Button --- 
-        self.test_time_button = ttk.Button(button_frame, text="Test GetTime", command=self.test_get_time, style='TButton')
-        self.test_time_button.pack(side=tk.LEFT, padx=5)
+        # --- ADDED Test GetTime Button --- 
+        # self.test_time_button = ttk.Button(button_frame, text="Test GetTime", command=self.test_get_time, style='TButton')
+        # self.test_time_button.pack(side=tk.LEFT, padx=(15, 5)) # Add spacing before it now
+        
+        # --- ADDED Test Spell Function Buttons --- #
+        # self.test_cooldown_button = ttk.Button(button_frame, text="Test Cooldown", command=self.test_get_cooldown, style='TButton')
+        # self.test_cooldown_button.pack(side=tk.LEFT, padx=5)
+        # self.test_range_button = ttk.Button(button_frame, text="Test Range", command=self.test_is_in_range, style='TButton')
+        # self.test_range_button.pack(side=tk.LEFT, padx=5)
 
         # --- Status Display ---
         self.rotation_status_label = ttk.Label(control_frame, text="Status: Stopped", anchor=tk.W)
@@ -1239,29 +1242,6 @@ class WowMonitorApp:
                  print(f"Unexpected error clearing log text: {e}", "ERROR")
                  traceback.print_exc()
 
-    # --- Add Test Lua Print Method ---
-    def test_lua_print(self):
-        """Sends a simple Lua print command via the pipe for testing."""
-        if not self.game or not self.game.is_ready():
-            messagebox.showerror("Error", "GameInterface not connected. Cannot send Lua command.")
-            print("Test Lua Print failed: GameInterface not ready.", "ERROR")
-            return
-        
-        lua_code = "print('Hello from Python via Injected DLL!')"
-        print(f"Sending test Lua command: {lua_code}", "DEBUG")
-        success = self.game.execute(lua_code)
-        if success:
-            print("Test Lua command sent successfully.", "INFO")
-            # The actual confirmation is seeing the message in WoW chat.
-            # Use triple quotes for the multi-line message
-            messagebox.showinfo("Lua Test", f"""Sent Lua print command.
-
-Check your WoW chat window for the message:
-'{lua_code}'""")
-        else:
-            print("Failed to send test Lua command via pipe.", "ERROR")
-            messagebox.showerror("Lua Test Error", "Failed to send the Lua command via the pipe.\nCheck DLL logs/status.")
-
     # --- Add Test GetTime Method ---
     def test_get_time(self):
         """Calls the get_game_time method and displays the result."""
@@ -1270,15 +1250,79 @@ Check your WoW chat window for the message:
             print("Test GetTime failed: GameInterface not ready.", "ERROR")
             return
         
-        print("Sending GET_TIME command...", "DEBUG")
-        game_time = self.game.get_game_time()
+        print("Sending GET_TIME_MS command...", "DEBUG")
+        game_time_ms = self.game.get_game_time_millis()
         
-        if game_time is not None:
-            print(f"Received game time: {game_time:.3f} seconds", "INFO")
-            messagebox.showinfo("GetTime Test", f"Current Game Time: {game_time:.3f} seconds")
+        if game_time_ms is not None:
+            print(f"Received game time: {game_time_ms} milliseconds", "INFO")
+            messagebox.showinfo("GetTime Test", f"Current Game Time: {game_time_ms} ms ({game_time_ms / 1000.0:.3f} s)")
         else:
             print("Failed to get game time via pipe.", "ERROR")
             messagebox.showerror("GetTime Test Error", "Failed to get game time via the pipe.\nCheck DLL logs/status.")
+
+    # --- ADDED Test Spell Cooldown Method ---
+    def test_get_cooldown(self):
+        """Tests the get_spell_cooldown method via IPC."""
+        if not self.game or not self.game.is_ready():
+            messagebox.showerror("Error", "GameInterface not connected. Cannot test cooldown.")
+            print("Test Cooldown failed: GameInterface not ready.", "ERROR")
+            return
+
+        spell_id = simpledialog.askinteger("Test Cooldown", "Enter Spell ID:", parent=self.root, minvalue=1)
+        if not spell_id:
+            return # User cancelled or entered nothing
+
+        print(f"Sending GET_CD command for Spell ID: {spell_id}...", "DEBUG")
+        cd_info = self.game.get_spell_cooldown(spell_id)
+
+        if cd_info:
+            is_ready = cd_info.get('isReady', False)
+            remaining = cd_info.get('remaining', -1.0)
+            status = "Ready" if is_ready else f"On Cooldown ({remaining:.1f}s left)" if remaining >= 0 else "On Cooldown (Time unknown)"
+            start = cd_info.get('startTime', 0)
+            duration = cd_info.get('duration', 0)
+            print(f"Cooldown Info for {spell_id}: Status={status}, Start={start:.3f}s, Duration={duration}ms, Ready={is_ready}, Remaining={remaining:.1f}s", "INFO")
+            messagebox.showinfo("Cooldown Test Result",
+                                f"Spell ID: {spell_id}\n" 
+                                f"Status: {status}\n" 
+                                f"Start Time (s): {start:.3f}\n"
+                                f"Duration (ms): {duration}\n"
+                                f"Is Ready: {is_ready}")
+        else:
+            print(f"Failed to get cooldown info for {spell_id} via pipe.", "ERROR")
+            messagebox.showerror("Cooldown Test Error", f"Failed to get cooldown info for Spell ID {spell_id}.\nCheck DLL logs/status or if spell ID is valid.")
+
+    # --- ADDED Test Spell Range Method ---
+    def test_is_in_range(self):
+        """Tests the is_spell_in_range method via IPC."""
+        if not self.game or not self.game.is_ready():
+            messagebox.showerror("Error", "GameInterface not connected. Cannot test range.")
+            print("Test Range failed: GameInterface not ready.", "ERROR")
+            return
+        
+        # Check if target exists first, as range check needs it
+        if not self.om or not self.om.target:
+            messagebox.showwarning("Test Range", "Cannot test range: No target selected in game.")
+            return
+
+        spell_id = simpledialog.askinteger("Test Range", "Enter Spell ID:", parent=self.root, minvalue=1)
+        if not spell_id:
+            return # User cancelled
+
+        print(f"Sending IS_IN_RANGE command for Spell ID: {spell_id}...", "DEBUG")
+        # Hardcode target="target" for now, could add dialog later if needed
+        range_result = self.game.is_spell_in_range(spell_id, target_unit_id="target") 
+
+        if range_result is not None:
+            status_str = 'Yes (In Range)' if range_result == 1 else ('No (Out of Range)' if range_result == 0 else 'Unknown Error')
+            print(f"Range check for {spell_id} on 'target': {status_str} (Result Code: {range_result})", "INFO")
+            messagebox.showinfo("Range Test Result",
+                                f"Spell ID: {spell_id}\n" 
+                                f"Target: 'target'\n"
+                                f"Result: {status_str}")
+        else:
+            print(f"Failed to get range info for {spell_id} via pipe.", "ERROR")
+            messagebox.showerror("Range Test Error", f"Failed to get range info for Spell ID {spell_id}.\nCheck DLL logs/status or if spell ID/target is valid.")
 
 
 # --- Log Redirector Class ---
