@@ -13,7 +13,7 @@ This project uses a two-part architecture:
     *   **Memory Handler (`memory.py`):** Uses `pymem` to attach to the WoW process and read/write memory.
     *   **Object Manager (`object_manager.py`):** Reads the WoW object list, manages a cache of `WowObject` instances, and identifies the local player and target.
     *   **WoW Object (`wow_object.py`):** Represents game objects (players, units) and reads their properties from memory using offsets defined in `offsets.py`.
-    *   **Game Interface (`gameinterface.py`):** Manages communication with the injected C++ DLL via **Named Pipes**. Sends commands (like `EXEC_LUA`, `GET_TIME`) and receives responses.
+    *   **Game Interface (`gameinterface.py`):** Manages communication with the injected C++ DLL via **Named Pipes**. Sends commands (like `EXEC_LUA`, `GET_TIME_MS`, `GET_CD`, `IS_IN_RANGE`) and receives responses. Calculates accurate spell readiness based on DLL data.
     *   **Combat Rotation (`combat_rotation.py`):** Engine capable of executing rotations based on loaded Lua scripts or prioritized rules defined in the GUI editor (`rules.py`).
     *   **Target Selector (`targetselector.py`):** Basic framework for target selection logic.
     *   **Offsets (`offsets.py`):** Contains memory addresses and structure offsets specific to WoW 3.3.5a (12340).
@@ -21,10 +21,10 @@ This project uses a two-part architecture:
 2.  **C++ Injected DLL (`WowInjectDLL/`):**
     *   **Core Logic (`dllmain.cpp`):** Written in C++, compiled into `WowInjectDLL.dll`.
     *   **Detours Hooking:** Uses Microsoft Detours (included in `vendor/Detours`) to hook the game's `EndScene` function (DirectX 9). This provides a reliable execution context within the main game thread.
-    *   **Named Pipe Server:** Creates and manages a named pipe (`\\.\pipe\WowInjectPipe`) to receive commands from the Python process.
-    *   **Command Handling:** Parses commands received over the pipe (e.g., `ping`, `EXEC_LUA:<code>`, `GET_TIME`).
+    *   **Persistent Named Pipe Server:** Creates and manages a named pipe (`\\.\pipe\WowInjectPipe`) that **persists** after client disconnects, allowing the Python GUI to reconnect without reinjecting the DLL.
+    *   **Command Handling:** Parses commands received over the pipe (e.g., `ping`, `EXEC_LUA:<code>`, `GET_TIME_MS`, `GET_CD:<id>`, `IS_IN_RANGE:<id>,<unit>`).
     *   **Main Thread Execution:** Queues requests that require interaction with the game's main thread (like executing Lua) and processes them within the hooked `EndScene` function.
-    *   **Lua Interaction:** Uses known function pointers (`offsets.py`) to execute Lua code (`FrameScript_Execute`) or interact with the Lua C API (e.g., `lua_loadbuffer`, `lua_pcall` for `GetTime`).
+    *   **Lua Interaction:** Uses known function pointers (`offsets.py`) to execute Lua code or interact with the Lua C API (e.g., `GetTime()`, `GetSpellCooldown()`, `IsSpellInRange()`).
     *   **Build System (`CMakeLists.txt`):** Uses CMake to manage the C++ build process, including finding Detours and linking necessary libraries.
 
 ## Current Features
@@ -32,9 +32,11 @@ This project uses a two-part architecture:
 *   **Process Attachment & Memory Reading:** Connects to `Wow.exe` and reads memory addresses.
 *   **Object Management:** Iterates the game's object list, identifies player/target, caches objects.
 *   **Game State Monitoring:** GUI displays real-time information about the player, target, and nearby units (Health, Power, Position, Status).
-*   **Named Pipe IPC:** Robust communication channel between the Python GUI and the injected C++ DLL.
+*   **Persistent Named Pipe IPC:** Robust communication channel between the Python GUI and the injected C++ DLL, allowing reconnection after GUI restart.
 *   **Lua Execution:** Send arbitrary Lua code strings from Python to be executed within the game's main thread via the DLL (`EXEC_LUA` command).
-*   **Game Time Retrieval:** Get the current in-game time via the DLL (`GET_TIME` command).
+*   **Game Time Retrieval:** Get the current in-game time (in milliseconds) via the DLL (`GET_TIME_MS` command).
+*   **Spell Cooldown Check:** Get spell cooldown status (start, duration, calculated readiness, remaining time) via the DLL (`GET_CD` command) and accurate Python-side calculation.
+*   **Spell Range Check:** Check if a spell is in range of a specific unit (e.g., "target") via the DLL (`IS_IN_RANGE` command).
 *   **Rotation Engine:**
     *   Load and run simple Lua rotation scripts (`Scripts/` folder).
     *   Define and run prioritized, condition-based rotation rules via the GUI Editor tab.
@@ -101,7 +103,7 @@ This project uses a two-part architecture:
 *   Offsets in `offsets.py` are critical and specific to WoW 3.3.5a (12340).
 *   Error handling can be improved in both Python and C++ components.
 *   The C++ DLL relies on Detours for hooking; ensure the build process correctly links it.
-*   Reading certain dynamic values directly from memory can sometimes be inconsistent; the DLL aims to provide more reliable access via Lua or specific functions where possible.
+*   The DLL now handles interaction with core Lua functions like `GetSpellCooldown`, `IsSpellInRange`, and `GetTime`, providing more reliable data than direct memory reads for these values.
 *   Rotation logic is currently basic; complex conditions and actions may require more sophisticated Lua interaction or direct memory manipulation within the DLL.
 
 ## Current Features (as of initial commit):
