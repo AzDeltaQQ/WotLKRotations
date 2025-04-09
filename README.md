@@ -10,38 +10,43 @@ This project uses a two-part architecture:
 
 1.  **Python Frontend & Core Logic:**
     *   **GUI (`gui.py`):** A `tkinter`-based graphical user interface to display game information (player/target status, nearby objects, logs) and control the rotation engine.
-    *   **Memory Handler (`memory.py`):** Uses `pymem` to attach to the WoW process and read/write memory.
-    *   **Object Manager (`object_manager.py`):** Reads the WoW object list, manages a cache of `WowObject` instances, and identifies the local player and target.
+    *   **Memory Handler (`memory.py`):** Uses `pymem` to attach to the WoW process and read/write memory (primarily for object manager and static data).
+    *   **Object Manager (`object_manager.py`):** Reads the WoW object list, manages a cache of `WowObject` instances, and identifies the local player and target. Reads dynamic object data like health, power, position, status flags, and known spell IDs directly from memory.
     *   **WoW Object (`wow_object.py`):** Represents game objects (players, units) and reads their properties from memory using offsets defined in `offsets.py`.
-    *   **Game Interface (`gameinterface.py`):** Manages communication with the injected C++ DLL via **Named Pipes**. Sends commands (like `EXEC_LUA`, `GET_TIME_MS`, `GET_CD`, `IS_IN_RANGE`) and receives responses. Calculates accurate spell readiness based on DLL data.
+    *   **Game Interface (`gameinterface.py`):** Manages communication with the injected C++ DLL via **Named Pipes**. Sends commands (like `EXEC_LUA`, `GET_TIME_MS`, `GET_CD`, `IS_IN_RANGE`, `GET_SPELL_INFO`, `CAST_SPELL`) and receives responses. Implements logic to handle asynchronous responses and ensure correct command-response pairing.
     *   **Combat Rotation (`combat_rotation.py`):** Engine capable of executing rotations based on loaded Lua scripts or prioritized rules defined in the GUI editor (`rules.py`).
     *   **Target Selector (`targetselector.py`):** Basic framework for target selection logic.
     *   **Offsets (`offsets.py`):** Contains memory addresses and structure offsets specific to WoW 3.3.5a (12340).
+    *   **Rules (`rules.py`):** Defines the structure for rotation rules used by the editor.
 
 2.  **C++ Injected DLL (`WowInjectDLL/`):**
     *   **Core Logic (`dllmain.cpp`):** Written in C++, compiled into `WowInjectDLL.dll`.
     *   **Detours Hooking:** Uses Microsoft Detours (included in `vendor/Detours`) to hook the game's `EndScene` function (DirectX 9). This provides a reliable execution context within the main game thread.
     *   **Persistent Named Pipe Server:** Creates and manages a named pipe (`\\.\pipe\WowInjectPipe`) that **persists** after client disconnects, allowing the Python GUI to reconnect without reinjecting the DLL.
-    *   **Command Handling:** Parses commands received over the pipe (e.g., `ping`, `EXEC_LUA:<code>`, `GET_TIME_MS`, `GET_CD:<id>`, `IS_IN_RANGE:<id>,<unit>`, `GET_SPELL_INFO:<id>`).
-    *   **Main Thread Execution:** Queues requests that require interaction with the game's main thread (like executing Lua) and processes them within the hooked `EndScene` function.
-    *   **Lua Interaction:** Uses known function pointers (`offsets.py`) to execute Lua code or interact with the Lua C API (e.g., `GetTime()`, `GetSpellCooldown()`, `IsSpellInRange()`, `GetSpellInfo()`).
+    *   **Command Handling:** Parses commands received over the pipe (e.g., `ping`, `EXEC_LUA:<code>`, `GET_TIME_MS`, `GET_CD:<id>`, `IS_IN_RANGE:<id>,<unit>`, `GET_SPELL_INFO:<id>`, `CAST_SPELL:<id>[,guid]`).
+    *   **Main Thread Execution:** Queues requests that require interaction with the game's main thread (like executing Lua or calling game functions) and processes them within the hooked `EndScene` function.
+    *   **Lua Interaction:** Uses known function pointers (`offsets.py`/hardcoded in DLL) to execute Lua code or interact with the Lua C API (e.g., `GetTime()`, `GetSpellCooldown()`, `IsSpellInRange()`, `GetSpellInfo()`).
+    *   **Internal Function Calls:** Uses known function pointers to directly call internal game C functions (e.g., `CastLocalPlayerSpell`).
     *   **Build System (`CMakeLists.txt`):** Uses CMake to manage the C++ build process, including finding Detours and linking necessary libraries.
 
 ## Current Features
 
 *   **Process Attachment & Memory Reading:** Connects to `Wow.exe` and reads memory addresses.
-*   **Object Management:** Iterates the game's object list, identifies player/target, caches objects.
+*   **Object Management:** Iterates the game's object list, identifies player/target, caches objects, reads known spell IDs.
 *   **Game State Monitoring:** GUI displays real-time information about the player, target, and nearby units (Health, Power, Position, Status).
-*   **Persistent Named Pipe IPC:** Robust communication channel between the Python GUI and the injected C++ DLL, allowing reconnection after GUI restart.
+*   **Persistent Named Pipe IPC:** Robust, asynchronous communication channel between the Python GUI and the injected C++ DLL, allowing GUI reconnection without reinjecting the DLL. Handles out-of-order responses.
 *   **Lua Execution:** Send arbitrary Lua code strings from Python to be executed within the game's main thread via the DLL (`EXEC_LUA` command).
 *   **Game Time Retrieval:** Get the current in-game time (in milliseconds) via the DLL (`GET_TIME_MS` command).
-*   **Spell Cooldown Check:** Get spell cooldown status (start, duration, calculated readiness, remaining time) via the DLL (`GET_CD` command) and accurate Python-side calculation.
-*   **Spell Range Check:** Check if a spell is in range of a specific unit (e.g., "target") via the DLL (`IS_IN_RANGE` command).
-*   **Spell Info Lookup:** Retrieve spell details (Name, Rank, Cast Time, Cost, Power Type, Min Range, Icon) via the DLL (`GET_SPELL_INFO` command).
+*   **Spell Cooldown Check:** Get spell cooldown status (start, duration, calculated readiness, remaining time) via the DLL (`GET_CD` command) using the game's `GetSpellCooldown` function.
+*   **Spell Range Check:** Check if a spell is in range of a specific unit (e.g., "target") via the DLL (`IS_IN_RANGE` command) using the game's `IsSpellInRange` function (via `GetSpellInfo` lookup).
+*   **Spell Info Lookup:** Retrieve spell details (Name, Rank, Cast Time, Cost, Power Type, Min Range, Icon) via the DLL (`GET_SPELL_INFO` command) using the game's `GetSpellInfo` function.
+*   **Spell Casting:** Cast spells using the internal C function `CastLocalPlayerSpell` via the DLL (`CAST_SPELL` command), optionally targeting a specific GUID.
 *   **Rotation Engine:**
     *   Load and run simple Lua rotation scripts (`Scripts/` folder).
-    *   Define and run prioritized, condition-based rotation rules via the GUI Editor tab.
+    *   Define, save, load, and run prioritized, condition-based rotation rules via the GUI Editor tab.
+*   **GUI Controls:** Test buttons for all major DLL interaction functions (GetTime, GetCooldown, IsInRange, CastSpell).
 *   **Logging:** GUI Log tab captures output from Python scripts. DLL uses `OutputDebugStringA` (viewable with DebugView).
+*   **Spellbook Scanner:** GUI utility to read and display known spell IDs from memory.
 
 ## Dependencies
 
@@ -72,8 +77,8 @@ This project uses a two-part architecture:
     *   **Configure CMake:**
         ```bash
         # Create a build directory and configure for Release build (adjust generator if needed)
-        cmake -S WowInjectDLL -B build -A Win32 
-        # For Visual Studio: cmake -S WowInjectDLL -B build -G "Visual Studio 17 2022" -A Win32 
+        cmake -S WowInjectDLL -B build -A Win32
+        # For Visual Studio: cmake -S WowInjectDLL -B build -G "Visual Studio 17 2022" -A Win32
         # Use Win32 architecture for the 32-bit WoW client.
         ```
     *   **Build the DLL:**
@@ -97,60 +102,27 @@ This project uses a two-part architecture:
         python gui.py
         ```
     *   The GUI should launch. It will attempt to connect to the WoW process and the named pipe created by the DLL. Check the Log tab for status messages.
-    *   Use the Monitor tab to view game state, the Rotation Control tab to load/run scripts/rules, and the Rotation Editor to define rules.
+    *   Use the Monitor tab to view game state, the Rotation Control tab to load/run scripts/rules and test DLL functions, and the Rotation Editor to define rules.
 
 ## Development Notes & Known Issues
 
-*   Offsets in `offsets.py` are critical and specific to WoW 3.3.5a (12340).
+*   Offsets in `offsets.py` and hardcoded in the DLL are critical and specific to WoW 3.3.5a (12340).
 *   Error handling can be improved in both Python and C++ components.
 *   The C++ DLL relies on Detours for hooking; ensure the build process correctly links it.
-*   The DLL now handles interaction with core Lua functions like `GetSpellCooldown`, `IsSpellInRange`, `GetTime`, and `GetSpellInfo`, providing more reliable data than direct memory reads for these values.
-*   Rotation logic is currently basic; complex conditions and actions may require more sophisticated Lua interaction or direct memory manipulation within the DLL.
+*   The DLL now handles interaction with core Lua/C functions like `GetSpellCooldown`, `IsSpellInRange`, `GetTime`, `GetSpellInfo`, and `CastLocalPlayerSpell` providing more reliable data and actions than direct memory manipulation for these cases.
+*   Rotation logic is currently based on simple conditions; complex scenarios might need more Lua or DLL enhancements.
 
-## Current Features (as of initial commit):
+## Deprecated Features (Replaced by DLL/IPC)
 
-*   **Memory Reading:** Establishes connection to the WoW 3.3.5a process using `pymem`.
-*   **Object Manager:** 
-    *   Finds the Object Manager pointer.
-    *   Iterates through the object list.
-    *   Identifies the local player and target.
-*   **WoW Object Representation:**
-    *   Reads core object data (GUID, Type, Position, Rotation).
-    *   Reads Unit Fields data (Health, Max Health, Power Type, Flags, Level, Target GUID).
-    *   Reads Player/Unit names (requires Name Cache reading).
-    *   Reads Current/Max Health, Mana, and Energy for the player.
-*   **Basic GUI (`gui.py`):
-    *   Uses `tkinter` for the interface.
-    *   Displays Player Name, HP, and Primary Resource (Mana/Energy).
-    *   Displays Target Name, HP, and Primary Resource.
-    *   Monitor tab showing nearby Player/Unit objects with basic details (GUID, Type, Name, HP, Power, Distance, Status).
-    *   Log tab for debug output.
-    *   Basic framework for Rotation Control and Editor tabs (not fully implemented).
-*   **Lua Interface (`luainterface.py`):
-    *   Finds the Lua state pointer.
-    *   Basic functionality to execute Lua strings in the game (e.g., `RunString`).
-    *   Framework for calling C functions within WoW's Lua environment (experimental, needs more testing).
-*   **Combat Rotation (`combat_rotation.py`):**
-    *   Placeholder class structure exists.
-    *   Currently loads placeholder rules but does not execute complex logic.
-
-## Current Status & Known Issues:
-
-*   Core memory reading for player/target stats (HP, Mana, Energy) is functional.
-*   Object monitoring tab displays nearby units.
-*   Direct memory reads for certain power values (especially current values) seem inconsistent, potentially due to `pymem` limitations or timing issues. The current implementation uses offsets found through debugging that work within the `WowObject` class updates.
-*   Reading unit names relies on finding and parsing the Name Cache, which can be complex.
-*   Combat rotation logic is not implemented.
-*   Lua C function calling needs thorough testing and likely refinement.
-*   Error handling can be improved.
-*   Offsets are hardcoded in `offsets.py` for client 12340.
+*   Direct Python shellcode injection for Lua execution.
+*   Direct memory reads from Python for spell cooldowns, range, game time (less reliable than calling game functions).
 
 ## Next Steps (Potential):
 
-1.  Implement and test combat rotation script loading and execution.
-2.  Refine Lua interface for reliable spell casting, cooldown checks, and information retrieval.
-3.  Improve stability and error handling.
-4.  Investigate alternative memory reading methods if `pymem` inconsistencies persist.
+1.  Implement more sophisticated rotation conditions (e.g., Aura checks, target casting checks) via Lua/DLL.
+2.  Add more game interaction functions to the DLL interface (e.g., TargetUnit, GetAuraInfo, Interact).
+3.  Improve stability and error reporting between Python and C++.
+4.  Refine target selection logic.
 5.  Add configuration options for offsets, settings, etc.
 
 ## Setup:

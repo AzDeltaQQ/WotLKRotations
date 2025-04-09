@@ -1,14 +1,15 @@
 import tkinter as tk
-from tkinter import ttk, Listbox, Scrollbar, messagebox, filedialog, scrolledtext, simpledialog
+from tkinter import ttk, Listbox, Scrollbar, messagebox, filedialog, scrolledtext
 import time
 import os # To list files in Scripts directory
 import configparser # To save/load config
 import math # For distance calc
 import sys # For redirecting stdout/stderr
 import traceback # For detailed error logging
+from typing import Optional
 
 # Project Modules
-from memory import MemoryHandler
+from memory import MemoryHandler, PROCESS_NAME # Import PROCESS_NAME here
 from object_manager import ObjectManager
 from wow_object import WowObject # Import class for type hinting and constants
 from gameinterface import GameInterface
@@ -31,16 +32,16 @@ class WowMonitorApp:
         self.config.read(self.config_file)
 
         # --- Initialize Core Components ---
-        self.mem = None
-        self.om = None
-        self.game = None
-        self.combat_rotation = None
+        self.mem_handler: Optional[MemoryHandler] = None
+        self.obj_manager: Optional[ObjectManager] = None
+        self.game_interface: Optional[GameInterface] = None # Initialize here
+        self.combat_rotation: Optional[CombatRotation] = None
+        self.target_selector: Optional[TargetSelector] = None
         self.rotation_running = False
         self.loaded_script_path = None
         self.rotation_rules = [] # GUI's copy of rules for the editor
         self.update_job = None # To store the .after() job ID
         self.is_closing = False # Flag to prevent errors during shutdown
-        self.target_selector = None
 
         # --- WoW Path (Get from config or default) ---
         self.wow_path = self._get_wow_path()
@@ -364,6 +365,51 @@ class WowMonitorApp:
         self.rotation_status_label.grid(row=3, column=0, columnspan=3, padx=5, pady=(5,5), sticky=tk.EW)
         self.rotation_status_label.configure(style='Warning.TLabel') # Default to warning color when stopped
 
+        # --- Test Buttons Frame ---
+        test_frame = ttk.LabelFrame(tab, text="DLL Interface Tests")
+        test_frame.pack(pady=10, padx=10, fill="x")
+
+        # Test Get Time
+        time_button = ttk.Button(test_frame, text="Test GetTime()", command=self.test_get_time)
+        time_button.grid(row=0, column=0, padx=5, pady=5)
+
+        # Test Get Cooldown
+        cd_frame = ttk.Frame(test_frame)
+        cd_frame.grid(row=0, column=1, padx=5, pady=5)
+        cd_label = ttk.Label(cd_frame, text="Spell ID:")
+        cd_label.pack(side=tk.LEFT, padx=2)
+        self.test_cd_entry = ttk.Entry(cd_frame, width=8)
+        self.test_cd_entry.pack(side=tk.LEFT, padx=2)
+        self.test_cd_entry.insert(0, "6673") # Default Example
+        cd_button = ttk.Button(cd_frame, text="Test GetCooldown()", command=self.test_get_cooldown)
+        cd_button.pack(side=tk.LEFT, padx=2)
+
+        # Test Is In Range
+        range_frame = ttk.Frame(test_frame)
+        range_frame.grid(row=1, column=0, padx=5, pady=5, columnspan=2, sticky="w") # Span columns
+        range_label = ttk.Label(range_frame, text="Spell ID:")
+        range_label.pack(side=tk.LEFT, padx=2)
+        self.test_range_entry = ttk.Entry(range_frame, width=8)
+        self.test_range_entry.pack(side=tk.LEFT, padx=2)
+        self.test_range_entry.insert(0, "1752") # Default Example
+        range_unit_label = ttk.Label(range_frame, text="Unit:")
+        range_unit_label.pack(side=tk.LEFT, padx=2)
+        self.test_range_unit_entry = ttk.Entry(range_frame, width=10)
+        self.test_range_unit_entry.insert(0, "target")
+        self.test_range_unit_entry.pack(side=tk.LEFT, padx=2)
+        range_button = ttk.Button(range_frame, text="Test IsSpellInRange()", command=self.test_is_in_range)
+        range_button.pack(side=tk.LEFT, padx=2)
+
+        # --- ADDED: Test Cast Spell ---
+        cast_frame = ttk.Frame(test_frame)
+        cast_frame.grid(row=2, column=0, padx=5, pady=5, columnspan=2, sticky="w") # Span columns
+        cast_label = ttk.Label(cast_frame, text="Spell ID:")
+        cast_label.pack(side=tk.LEFT, padx=2)
+        self.test_cast_entry = ttk.Entry(cast_frame, width=8)
+        self.test_cast_entry.pack(side=tk.LEFT, padx=2)
+        cast_button = ttk.Button(cast_frame, text="Test CastSpell (Internal)", command=self.test_cast_spell_gui)
+        cast_button.pack(side=tk.LEFT, padx=2)
+        # --- END ADDED ---
 
     def setup_rotation_editor_tab(self, tab):
         main_frame = ttk.Frame(tab)
@@ -596,7 +642,7 @@ class WowMonitorApp:
 
     def start_rotation(self):
         # --- Add checks --- #
-        if self.is_closing or not self.mem or not self.mem.is_attached() or not self.om or not self.om.is_ready() or not self.combat_rotation or not self.game or not self.game.is_ready():
+        if self.is_closing or not self.mem_handler or not self.mem_handler.is_attached() or not self.obj_manager or not self.obj_manager.is_ready() or not self.combat_rotation or not self.game_interface or not self.game_interface.is_ready():
             messagebox.showerror("Error", "Cannot start rotation: Core components not ready or WoW not attached.")
             print("Cannot start rotation: Core components not ready or WoW not attached.", "ERROR")
             # Ensure rotation_running is False if we can't start
@@ -815,11 +861,11 @@ class WowMonitorApp:
     def scan_spellbook(self):
         """Reads known spell IDs directly from memory and displays them."""
         print("Listing Known Spell IDs from memory...", "INFO")
-        if not self.om or not self.om.is_ready():
+        if not self.obj_manager or not self.obj_manager.is_ready():
             messagebox.showerror("Error", "Object Manager is not ready.")
             return
 
-        known_spell_ids = self.om.read_known_spell_ids()
+        known_spell_ids = self.obj_manager.read_known_spell_ids()
         if not known_spell_ids:
              messagebox.showerror("Error", "Failed to read known spell IDs from memory. Check logs or offsets.")
              return
@@ -872,10 +918,10 @@ class WowMonitorApp:
 
     def lookup_spell_info(self):
             """Looks up spell info using the new IPC methods and updates labels."""
-            if not self.game or not self.game.is_ready():
+            if not self.game_interface or not self.game_interface.is_ready():
                 messagebox.showerror("Error", "GameInterface is not ready. Cannot lookup spell.")
                 return
-            if not self.om: # Need ObjectManager for target check
+            if not self.obj_manager: # Need ObjectManager for target check
                 messagebox.showerror("Error", "ObjectManager is not ready.")
                 return
 
@@ -897,16 +943,16 @@ class WowMonitorApp:
             spell_info_result = None
             try:
                 print(f"Calling game.get_spell_info for SpellID {spell_id}", "DEBUG")
-                spell_info_result = self.game.get_spell_info(spell_id)
+                spell_info_result = self.game_interface.get_spell_info(spell_id)
             except Exception as e:
                 print(f"Error during get_spell_info call: {type(e).__name__} - {e}", "ERROR")
 
             # --- Fetch Spell Range (Boolean In Range) via IPC ---
             range_result = None
-            if self.om.target: # Only check boolean range if target exists
+            if self.obj_manager.target: # Only check boolean range if target exists
                 try:
                     print(f"Calling game.is_spell_in_range for SpellID {spell_id} (Target exists)", "DEBUG")
-                    range_result = self.game.is_spell_in_range(spell_id) # Use new Lua version
+                    range_result = self.game_interface.is_spell_in_range(spell_id) # Use new Lua version
                 except Exception as e:
                     print(f"Error during Range call for SpellID {spell_id}: {e}", "ERROR")
             else:
@@ -916,7 +962,7 @@ class WowMonitorApp:
             cooldown_result = None
             try:
                 print(f"Calling game.get_spell_cooldown for SpellID {spell_id}", "DEBUG")
-                cooldown_result = self.game.get_spell_cooldown(spell_id) # Use new Lua version
+                cooldown_result = self.game_interface.get_spell_cooldown(spell_id) # Use new Lua version
             except Exception as e:
                 print(f"Error during Cooldown call for SpellID {spell_id}: {e}", "ERROR")
 
@@ -1263,67 +1309,130 @@ class WowMonitorApp:
 
     # --- ADDED Test Spell Cooldown Method ---
     def test_get_cooldown(self):
-        """Tests the get_spell_cooldown method via IPC."""
-        if not self.game or not self.game.is_ready():
-            messagebox.showerror("Error", "GameInterface not connected. Cannot test cooldown.")
-            print("Test Cooldown failed: GameInterface not ready.", "ERROR")
+        """Handles the 'Test GetCooldown' button click."""
+        # Corrected check
+        if not self.game or not self.game.is_ready(): # Use self.game
+            print("Cannot test cooldown: Game Interface not ready.", "ERROR")
+            messagebox.showerror("Error", "Pipe connection not established.")
             return
 
-        spell_id = simpledialog.askinteger("Test Cooldown", "Enter Spell ID:", parent=self.root, minvalue=1)
-        if not spell_id:
-            return # User cancelled or entered nothing
+        spell_id_str = self.test_cd_entry.get() # Get from entry widget
+        if not spell_id_str:
+            messagebox.showwarning("Input Needed", "Please enter a Spell ID for cooldown test.")
+            return
 
-        print(f"Sending GET_CD command for Spell ID: {spell_id}...", "DEBUG")
-        cd_info = self.game.get_spell_cooldown(spell_id)
+        try:
+            spell_id = int(spell_id_str)
+            if spell_id <= 0: raise ValueError("Spell ID must be positive.")
+        except ValueError:
+            messagebox.showerror("Invalid Input", "Spell ID must be a positive integer.")
+            return
 
-        if cd_info:
-            is_ready = cd_info.get('isReady', False)
-            remaining = cd_info.get('remaining', -1.0)
-            status = "Ready" if is_ready else f"On Cooldown ({remaining:.1f}s left)" if remaining >= 0 else "On Cooldown (Time unknown)"
-            start = cd_info.get('startTime', 0)
-            duration = cd_info.get('duration', 0)
-            print(f"Cooldown Info for {spell_id}: Status={status}, Start={start:.3f}s, Duration={duration}ms, Ready={is_ready}, Remaining={remaining:.1f}s", "INFO")
-            messagebox.showinfo("Cooldown Test Result",
-                                f"Spell ID: {spell_id}\n" 
-                                f"Status: {status}\n" 
-                                f"Start Time (s): {start:.3f}\n"
-                                f"Duration (ms): {duration}\n"
-                                f"Is Ready: {is_ready}")
-        else:
-            print(f"Failed to get cooldown info for {spell_id} via pipe.", "ERROR")
-            messagebox.showerror("Cooldown Test Error", f"Failed to get cooldown info for Spell ID {spell_id}.\nCheck DLL logs/status or if spell ID is valid.")
+        print(f"Requesting cooldown for Spell ID {spell_id}...", "INFO")
+        try:
+            # Corrected call
+            cd_info = self.game.get_spell_cooldown(spell_id) # Use self.game
+            if cd_info:
+                status = "Ready" if cd_info['isReady'] else f"On Cooldown ({cd_info['remaining']:.1f}s left)"
+                duration_sec = cd_info['duration'] / 1000.0 if cd_info['duration'] > 0 else 0
+                info_str = f"Spell ID: {spell_id}\nStatus: {status}\nStart Time: {cd_info['startTime']:.2f}s\nDuration: {duration_sec:.2f}s"
+                print(info_str, "RESULT") # Log result
+                messagebox.showinfo("Cooldown Info", info_str)
+            else:
+                print(f"Failed to get cooldown info for {spell_id} (or invalid/no response).", "WARNING")
+                messagebox.showwarning("Cooldown Test", f"Failed to get cooldown info for Spell ID {spell_id}.\nCheck DLL logs/status or if spell ID is valid.")
+        except Exception as e:
+            print(f"Error during cooldown test: {e}", "ERROR")
+            messagebox.showerror("Cooldown Test Error", f"An error occurred: {e}")
 
-    # --- ADDED Test Spell Range Method ---
     def test_is_in_range(self):
-        """Tests the is_spell_in_range method via IPC."""
-        if not self.game or not self.game.is_ready():
-            messagebox.showerror("Error", "GameInterface not connected. Cannot test range.")
-            print("Test Range failed: GameInterface not ready.", "ERROR")
-            return
-        
-        # Check if target exists first, as range check needs it
-        if not self.om or not self.om.target:
-            messagebox.showwarning("Test Range", "Cannot test range: No target selected in game.")
+        """Handles the 'Test IsSpellInRange' button click."""
+        # Corrected check
+        if not self.game or not self.game.is_ready(): # Use self.game
+            print("Cannot test range: Game Interface not ready.", "ERROR")
+            messagebox.showerror("Error", "Pipe connection not established.")
             return
 
-        spell_id = simpledialog.askinteger("Test Range", "Enter Spell ID:", parent=self.root, minvalue=1)
-        if not spell_id:
-            return # User cancelled
+        # Get Spell ID from entry
+        spell_id_str = self.test_range_entry.get() # Use entry widget
+        if not spell_id_str:
+            messagebox.showwarning("Input Needed", "Please enter a Spell ID for range test.")
+            return
+        try:
+            spell_id = int(spell_id_str)
+            if spell_id <= 0: raise ValueError("Spell ID must be positive.")
+        except ValueError:
+            messagebox.showerror("Invalid Input", "Spell ID must be a positive integer.")
+            return
 
-        print(f"Sending IS_IN_RANGE command for Spell ID: {spell_id}...", "DEBUG")
-        # Hardcode target="target" for now, could add dialog later if needed
-        range_result = self.game.is_spell_in_range(spell_id, target_unit_id="target") 
+        # Get Unit ID from entry
+        unit_id = self.test_range_unit_entry.get().strip() # Use entry widget
+        if not unit_id:
+            messagebox.showwarning("Input Needed", "Please enter a Unit ID (e.g., 'target', 'player').")
+            return
 
-        if range_result is not None:
-            status_str = 'Yes (In Range)' if range_result == 1 else ('No (Out of Range)' if range_result == 0 else 'Unknown Error')
-            print(f"Range check for {spell_id} on 'target': {status_str} (Result Code: {range_result})", "INFO")
-            messagebox.showinfo("Range Test Result",
-                                f"Spell ID: {spell_id}\n" 
-                                f"Target: 'target'\n"
-                                f"Result: {status_str}")
-        else:
-            print(f"Failed to get range info for {spell_id} via pipe.", "ERROR")
-            messagebox.showerror("Range Test Error", f"Failed to get range info for Spell ID {spell_id}.\nCheck DLL logs/status or if spell ID/target is valid.")
+        print(f"Requesting range check for Spell ID {spell_id} on Unit '{unit_id}'...", "INFO")
+        try:
+            # Corrected call
+            range_result = self.game.is_spell_in_range(spell_id, unit_id) # Use self.game
+            if range_result is not None:
+                status_str = 'Yes (In Range)' if range_result == 1 else ('No (Out of Range)' if range_result == 0 else 'Unknown/Error')
+                info_str = f"Spell ID: {spell_id}\nUnit: '{unit_id}'\nIn Range? {status_str} (Result Code: {range_result})"
+                chat_msg = f"[Bot] Range Test: Spell {spell_id} on '{unit_id}' -> {status_str} (Code: {range_result})" # Chat message
+                print(info_str, "RESULT") # Log result
+                messagebox.showinfo("Range Check Result", info_str) # Keep messagebox
+                try:
+                    self.game.send_chat_message(chat_msg) # Send to WoW chat
+                except Exception as chat_e:
+                    print(f"Error sending range result to chat: {chat_e}", "ERROR")
+            else:
+                print(f"Failed to get range info for {spell_id} on '{unit_id}'.", "WARNING")
+                messagebox.showwarning("Range Test", f"Failed to get range info for Spell ID {spell_id} on '{unit_id}'.\nCheck DLL logs/status or if spell ID/unit is valid.")
+        except Exception as e:
+             print(f"Error during range test: {e}", "ERROR")
+             messagebox.showerror("Range Test Error", f"An error occurred: {e}")
+
+    def test_cast_spell_gui(self):
+        """Handles the 'Test CastSpell (Internal)' button click."""
+        # Corrected check
+        if not self.game or not self.game.is_ready(): # Use self.game
+            print("Cannot test casting: Game Interface not ready.", "ERROR")
+            messagebox.showerror("Error", "Pipe connection not established.")
+            return
+
+        spell_id_str = self.test_cast_entry.get()
+        if not spell_id_str:
+            messagebox.showwarning("Input Needed", "Please enter a Spell ID for casting test.")
+            return
+
+        try:
+            spell_id = int(spell_id_str)
+            if spell_id <= 0: raise ValueError("Spell ID must be positive.")
+        except ValueError:
+            messagebox.showerror("Invalid Input", "Spell ID must be a positive integer.")
+            return
+
+        # Corrected way to get target GUID (handle None target)
+        target_guid = self.obj_manager.target.guid if self.obj_manager and self.obj_manager.target else None
+        target_desc = f"current target (GUID 0x{target_guid:X})" if target_guid else "default target (GUID None/0)"
+
+        print(f"Attempting to cast Spell ID {spell_id} on {target_desc} via internal function...", "ACTION")
+
+        try:
+            # Corrected call
+            success = self.game.cast_spell(spell_id, target_guid) # Pass None if no target, use self.game
+
+            if success:
+                print(f"CAST_SPELL command for {spell_id} sent successfully.", "INFO")
+                # You might want a small popup here confirmation send succeeded
+                # messagebox.showinfo("Cast Command Sent", f"Command to cast {spell_id} sent.")
+            else:
+                print(f"Failed to send CAST_SPELL command for {spell_id}.", "ERROR")
+                messagebox.showerror("Send Error", f"Failed to send CAST_SPELL command for {spell_id} via pipe.")
+
+        except Exception as e:
+             print(f"Error during GUI cast spell test: {e}", "ERROR")
+             messagebox.showerror("CastSpell Test Error", f"An error occurred: {e}")
 
 
 # --- Log Redirector Class ---
@@ -1347,44 +1456,54 @@ class LogRedirector:
 
     def _process_message(self, message, tag=None):
          # Basic check to prevent recursive logging from within this method
-         if "GUI LOG ERROR" in message:
+         if "GUI LOG ERROR" in str(message): # Ensure message is string for check
               print(message, file=sys.__stderr__) # Ensure critical errors hit console
-              return
+              return # Avoid logging the error message itself back to the GUI
 
          # Determine tag
          log_level = tag if tag else self.default_tag
          # Allow print("message", "TAG") override
-         if isinstance(message, tuple) and len(message) > 1 and message[1] in self.text_widget.tag_names():
-              log_level = message[1]
-              message = message[0]
-         message = str(message) # Ensure it's a string
+         msg_str = str(message) # Ensure message is a string for processing
+         if isinstance(message, tuple) and len(message) > 1 and isinstance(message[1], str) and message[1].upper() in ["ERROR", "WARNING", "INFO", "DEBUG", "ACTION", "RESULT", "ROTATION"]:
+              log_level = message[1].upper()
+              msg_str = str(message[0])
 
          # Find explicit log level hints in the message itself for convenience
          if not tag: # Only check hints if no explicit tag given
-             for hint, tag_name in {"ERROR": "ERROR", "WARNING": "WARNING", "DEBUG": "DEBUG", "INFO": "INFO", "ROTATION":"ROTATION"}.items():
-                  if hint in message.upper():
+             for hint, tag_name in {"ERROR": "ERROR", "WARNING": "WARNING", "DEBUG": "DEBUG", "INFO": "INFO", "ACTION": "ACTION", "RESULT":"RESULT", "ROTATION":"ROTATION"}.items():
+                  if hint in msg_str.upper():
                        log_level = tag_name
                        break
 
          # Write to Text widget
-         self.text_widget.config(state=tk.NORMAL)
-         timestamp = time.strftime("%H:%M:%S")
-         self.text_widget.insert(tk.END, f"{timestamp} ", ("DEBUG",)) # Timestamp always debug grey
-         self.text_widget.insert(tk.END, message.strip() + "\n", (log_level,))
-         self.text_widget.config(state=tk.DISABLED)
-         self.text_widget.see(tk.END) # Auto-scroll
+         # Check if widget exists and is valid
+         if not self.text_widget or not self.text_widget.winfo_exists():
+             self.initialized = False
+             print(f"GUI Log Widget destroyed. Original message: {msg_str}", file=sys.__stderr__)
+             return
+
+         try:
+             self.text_widget.config(state=tk.NORMAL)
+             timestamp = time.strftime("%H:%M:%S")
+             self.text_widget.insert(tk.END, f"{timestamp} ", ("DEBUG",)) # Timestamp always debug grey
+             self.text_widget.insert(tk.END, msg_str.strip() + "\n", (log_level,))
+             self.text_widget.config(state=tk.DISABLED)
+             self.text_widget.see(tk.END) # Auto-scroll
+         except tk.TclError as e:
+             # Handle cases where the widget might be destroyed during insert
+             self.initialized = False
+             print(f"GUI Log Widget TclError: {e}. Original message: {msg_str}", file=sys.__stderr__)
+         except Exception as e:
+              # Catch other potential errors during widget interaction
+              self.initialized = False
+              print(f"GUI Log Widget unknown error: {e}. Original message: {msg_str}", file=sys.__stderr__)
+
 
     def flush(self): pass # Required for stdout/stderr interface
 
 
 # --- Main Execution ---
 if __name__ == "__main__":
-    # Ensure PROCESS_NAME is defined globally or imported if needed here
-    try:
-        from memory import PROCESS_NAME # Import it specifically for the error message
-    except ImportError:
-        PROCESS_NAME = "Wow.exe" # Fallback if import fails
-
     root = tk.Tk()
     app = None # Define app outside try block for finally clause
     try:
@@ -1394,25 +1513,29 @@ if __name__ == "__main__":
         root.mainloop()
 
     except Exception as e:
-         print(f"Unhandled exception during application startup: {type(e).__name__}: {e}", "ERROR")
+         print(f"Unhandled exception during application startup: {type(e).__name__}: {e}", file=sys.__stderr__) # Ensure errors go to stderr
          traceback.print_exc(file=sys.stderr) # Ensure traceback goes somewhere
          try:
-             # Attempt to show final error message
-             messagebox.showerror("Fatal Application Error", f"A critical error occurred:\\n{e}\\n\\nCheck console/logs for details.")
+             # Attempt to show final error message if possible
+             if root and root.winfo_exists(): # Check if root window still exists
+                 messagebox.showerror("Fatal Application Error", f"A critical error occurred:\n{e}\n\nCheck console/logs for details.", parent=root)
              # Check if app and root exist before destroying
              if app and app.root and app.root.winfo_exists():
                   app.root.destroy()
              elif root and root.winfo_exists(): # Check root directly if app failed very early
                   root.destroy()
-         except:
+         except Exception as final_e:
+             print(f"Error during final error display/cleanup: {final_e}", file=sys.__stderr__)
              os._exit(1) # Force exit if everything fails
     finally:
          # Redirect output back to console before final cleanup attempts
          # This prevents errors if the log widget is already destroyed
          sys.stdout = sys.__stdout__
          sys.stderr = sys.__stderr__
-         
+
          # Ensure cleanup runs even if mainloop exits unexpectedly
          if app and not app.is_closing:
-              print("Application exited unexpectedly, attempting cleanup...", "WARNING")
+              print("Application exited unexpectedly, attempting cleanup...", file=sys.__stderr__)
               app.on_closing()
+         else:
+              print("Application exiting normally or cleanup already handled.", file=sys.__stderr__)

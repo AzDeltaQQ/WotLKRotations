@@ -156,13 +156,18 @@ class GameInterface:
         
         buffer = ctypes.create_string_buffer(buffer_size)
         bytes_read = wintypes.DWORD(0)
-        start_time = time.time()
+        start_time = time.time() # Timeout for the *entire* receive attempt, including potential loops later
 
         # --- Simplified Blocking Read ---
         # Windows ReadFile on pipes can block. We rely on the DLL sending data.
         # A more robust solution would involve overlapped I/O or PeekNamedPipe.
+        # We'll implement the retry/matching logic in send_receive. This function
+        # just attempts one blocking read. The timeout needs careful consideration.
+        # For now, keep the basic ReadFile call.
         try:
-            # print("[GameInterface] Waiting for response...") # Debug
+            # print(f"[GameInterface] Attempting ReadFile (timeout={timeout_s:.1f}s)...") # Debug
+            # NOTE: ReadFile itself doesn't have a direct timeout parameter in this non-overlapped usage.
+            # The timeout check happens *after* it returns or fails.
             success = ReadFile(
                 self.pipe_handle,
                 buffer,
@@ -171,33 +176,27 @@ class GameInterface:
                 None # Not overlapped
             )
             
-            # Check timeout *after* the blocking call returns or fails
+            # Check if the *call itself* seems to have taken too long, even if it eventually succeeded.
+            # This isn't a true functional timeout but can indicate delays.
             if time.time() - start_time > timeout_s:
-                 print(f"[GameInterface] Receive timeout ({timeout_s}s) exceeded.")
-                 # It's possible ReadFile returned *after* the timeout, so still check success/bytes_read
-                 # If ReadFile genuinely timed out internally (less common for blocking pipes),
-                 # success might be false or bytes_read 0.
+                 # This might happen if ReadFile was blocked for a long time
+                 print(f"[GameInterface] Warning: ReadFile call took longer than timeout ({timeout_s}s).")
 
             if not success or bytes_read.value == 0:
                 error_code = GetLastError()
-                # ERROR_BROKEN_PIPE is expected if DLL closes connection
-                # ERROR_MORE_DATA (234) might occur if buffer too small
-                # ERROR_OPERATION_ABORTED (995) might happen on disconnects
-                # ERROR_IO_PENDING (997) shouldn't happen with non-overlapped
-                # ERROR_PIPE_LISTENING (536) - server waiting for connection (shouldn't happen here)
+                # Don't log broken pipe frequently, it's expected on disconnect
                 if error_code not in [109]: # ERROR_BROKEN_PIPE
-                     # Only log error if it's not a standard broken pipe
-                     print(f"[GameInterface] Failed to read response from pipe. Success: {success}, Read: {bytes_read.value}, Error: {error_code}")
-                # else: # Don't spam console for normal disconnects
-                     # print("[GameInterface] Pipe broken during receive (client/server disconnected).")
+                     print(f"[GameInterface] ReadFile failed. Success: {success}, Read: {bytes_read.value}, Error: {error_code}")
+                # else:
+                #     print("[GameInterface] Pipe broken during receive.") # Debug log for disconnect
                 self.disconnect_pipe() # Disconnect on error/broken pipe
                 return None
 
             # Null-terminate the received data just in case
             buffer[bytes_read.value] = b'\0'
             # Decode using utf-8, replace errors to avoid crashes on malformed data
-            response = buffer.value.decode('utf-8', errors='replace')
-            # print(f"[GameInterface] Received: {response}") # Debug print
+            response = buffer.value.decode('utf-8', errors='replace').strip() # Strip whitespace
+            # print(f"[GameInterface] Raw Read: '{response}'") # Debug print raw value
             return response
 
         except Exception as e:
@@ -207,10 +206,73 @@ class GameInterface:
 
 
     def send_receive(self, command: str, timeout_s: float = 5.0) -> Optional[str]:
-        """Sends a command and waits for a response."""
-        if not self.send_command(command):
+        """Sends a command and waits for the *correct* response, discarding mismatches."""
+        if not self.is_ready():
+            print("[GameInterface] Cannot send/receive: Pipe not connected.")
             return None
-        return self.receive_response(timeout_s=timeout_s)
+
+        # Determine expected response prefix based on command
+        expected_prefix = None
+        if command == "ping": expected_prefix = "PONG"
+        elif command == "GET_TIME_MS": expected_prefix = "TIME:"
+        elif command.startswith("GET_CD:"): expected_prefix = "CD:" # Covers CD: and CD_ERR:
+        elif command.startswith("GET_RANGE:"): expected_prefix = "RANGE:"
+        elif command.startswith("IS_IN_RANGE:"): expected_prefix = "IN_RANGE:" # Covers IN_RANGE: and RANGE_ERR:
+        elif command.startswith("GET_SPELL_INFO:"): expected_prefix = "SPELLINFO:" # Covers SPELLINFO: and SPELLINFO_ERR:
+        elif command.startswith("CAST_SPELL:"): expected_prefix = "CAST_" # Covers CAST_SENT: and CAST_ERR:
+        # EXEC_LUA currently doesn't expect a specific response format, handle separately if needed
+
+        if not expected_prefix and not command.startswith("EXEC_LUA:"):
+            print(f"[GameInterface] Warning: Unknown command format for send_receive: {command}")
+            # Proceed but might fail if DLL sends unexpected response
+
+        # Send the command first
+        if not self.send_command(command):
+            return None # Send failed
+
+        start_time = time.time()
+        attempts = 0
+        max_attempts = 10 # Limit attempts to prevent infinite loops
+
+        while time.time() - start_time < timeout_s and attempts < max_attempts:
+            attempts += 1
+            # Use a shorter internal timeout for each ReadFile attempt within the loop
+            # This allows quicker checking for subsequent messages if the first is wrong.
+            response = self.receive_response(timeout_s=max(0.1, timeout_s / max_attempts))
+
+            if response is not None:
+                # Check if the received response matches the expected type
+                if expected_prefix and response.startswith(expected_prefix):
+                    # print(f"[GameInterface] Received expected response for '{command}': '{response}'") # Debug success
+                    return response # Found the correct response
+                # Handle EXEC_LUA which might not have a standard response or prefix
+                elif command.startswith("EXEC_LUA:"):
+                     # Currently, EXEC_LUA doesn't expect a reply. If it reads *anything*,
+                     # it's likely a leftover response. We should probably just return None or True
+                     # after sending, but if we *do* read something, log it and discard.
+                     print(f"[GameInterface] Warning: Received unexpected response after EXEC_LUA: '{response}'. Discarding.")
+                     # Continue loop to potentially clear buffer or hit timeout/max_attempts
+                else:
+                    # Received something, but it's not what we expected for this command
+                    print(f"[GameInterface] Warning: Received unexpected response '{response}' while waiting for '{expected_prefix}' (Command: '{command}'). Discarding.")
+                    # Continue the loop to try reading again
+            else:
+                # receive_response returned None (timeout or error/disconnect)
+                if not self.is_ready():
+                    print("[GameInterface] Pipe disconnected during receive loop.")
+                    return None # Pipe broke, exit
+                # If receive_response timed out on this attempt, continue loop until overall timeout
+                # print(f"[GameInterface] receive_response returned None (attempt {attempts}). Continuing loop.") # Debug
+
+            # Optional small delay to prevent tight spinning if receive_response returns None quickly
+            # time.sleep(0.01)
+
+        # Loop finished due to timeout or max attempts
+        if expected_prefix:
+            print(f"[GameInterface] Timeout or max attempts reached waiting for '{expected_prefix}' response to command '{command}'.")
+        else:
+            print(f"[GameInterface] Timeout or max attempts reached after command '{command}'.")
+        return None
 
     # --- High-Level Actions (To be adapted for IPC) ---
 
@@ -434,6 +496,46 @@ class GameInterface:
     # _execute_shellcode, call_lua_function, _read_lua_stack_string
     # _get_spell_cooldown_direct_legacy, _get_spell_range_direct_legacy
     # get_game_time_millis_direct, is_gcd_active (These might return later via IPC calls)
+
+    def cast_spell(self, spell_id: int, target_guid: Optional[int] = None) -> bool:
+        """
+        Sends a command to the DLL to cast a spell using the internal C function.
+        Command: "CAST_SPELL:<spell_id>[,<target_guid>]"
+        Returns True if the command was sent successfully, False otherwise.
+        (Does not guarantee the spell cast was successful in-game).
+        """
+        if not self.is_ready():
+            print("[GameInterface] Cannot cast spell: Pipe not connected.")
+            return False
+
+        if target_guid:
+            command = f"CAST_SPELL:{spell_id},{target_guid}"
+        else:
+            command = f"CAST_SPELL:{spell_id}" # No GUID, implies self-cast or current target handling by C func
+
+        print(f"[GameInterface] Sending cast command: {command}") # Debug print
+        success = self.send_command(command)
+        if not success:
+             print(f"[GameInterface] Failed to send CAST_SPELL command: {command}")
+        # Optional: Could use send_receive here if we want to wait for "CAST_SENT"
+        # response = self.send_receive(command, timeout_s=0.5)
+        # return response is not None and response.startswith(f"CAST_SENT:{spell_id}")
+        return success # Return based on send success for now
+
+    # --- Example Usage (Test Function) ---
+    def test_cast_spell(self, spell_id_to_test: int, target_guid_to_test: Optional[int] = None):
+         print(f"\n--- Testing Cast Spell (Internal C Func) ---")
+         if self.is_ready():
+              target_desc = f"target GUID 0x{target_guid_to_test:X}" if target_guid_to_test else "default target (GUID 0)"
+              print(f"Attempting to cast spell ID {spell_id_to_test} on {target_desc}...")
+              if self.cast_spell(spell_id_to_test, target_guid_to_test):
+                   print(f"CAST_SPELL command for {spell_id_to_test} sent successfully.")
+              else:
+                   print(f"Failed to send CAST_SPELL command for {spell_id_to_test}.")
+              # Note: Add a small delay if testing repeatedly to see effect in game
+              time.sleep(0.5)
+         else:
+              print("Skipping Cast Spell test: Pipe not connected.")
 
 
 # --- Example Usage ---
