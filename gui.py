@@ -876,49 +876,107 @@ class WowMonitorApp:
         spell_id = int(spell_id_str)
 
         # --- Display disabled message and reset labels --- #
-        self.spell_name_label.config(text="Name: N/A")
-        self.spell_rank_label.config(text="Rank: N/A")
-        self.spell_casttime_label.config(text="Cast Time: N/A")
+        self.spell_name_label.config(text="Name: Fetching...") # Indicate fetching
+        self.spell_rank_label.config(text="Rank: Fetching...") # Indicate fetching
+        self.spell_casttime_label.config(text="Cast Time: N/A") # Will get from GetSpellInfo eventually
         self.spell_range_label.config(text="Range: Fetching...")
         self.spell_cooldown_label.config(text="Cooldown: Fetching...")
         self.root.update_idletasks() # Force GUI update
 
-        # --- Call Direct Functions --- #
-        context = 0
-        if self.om and self.om.local_player:
-            context = self.om.local_player.base_address
-            print(f"Using context pointer for range lookup: {hex(context)}", "DEBUG")
+        # --- Call Lua Function for Name/Rank --- #
+        try:
+            print(f"Calling GetSpellInfo via pcall for SpellID {spell_id}", "DEBUG")
+            # GetSpellInfo returns: name, rank, icon, cost, isFunnel, powerType, castTime, minRange, maxRange
+            name_rank_result = self.game.call_lua_function(
+                lua_func_name="GetSpellInfo",
+                args=[spell_id],
+                return_types=['string', 'string'] # Only need first two results
+            )
+        except TypeError as te:
+            print(f"Error during Lua call for Name/Rank: {te}", "ERROR")
+            import traceback
+            traceback.print_exc()
+        except Exception as e:
+            print(f"Error during Lua call for Name/Rank: {type(e).__name__} - {e}", "ERROR")
+
+        if name_rank_result and len(name_rank_result) == 2:
+            name, rank = name_rank_result
+            self.spell_name_label.config(text=f"Name: {name if name else 'Not Found'}")
+            self.spell_rank_label.config(text=f"Rank: {rank if rank else 'N/A'}")
         else:
-             print("Warning: Local player object not found, using context 0 for range lookup.", "WARNING")
+            print(f"Failed to get Name/Rank for SpellID {spell_id} via Lua call.", "ERROR")
+            self.spell_name_label.config(text="Name: Lua Error")
+            self.spell_rank_label.config(text="Rank: Lua Error")
 
-        range_info = self.game.get_spell_range_direct(spell_id, context_ptr=context)
+        # --- Call Direct Functions for Range/Cooldown --- #
+        # Initialize results
+        range_result = None
+        cooldown_result = None
 
-        # --- Cooldown ---
-        cooldown_info = self.game.get_spell_cooldown_direct(spell_id)
-        if cooldown_info:
-            is_enabled = cooldown_info.get('enabled', False) # True if spell CD ready (ignores GCD)
-            remaining_cd = cooldown_info.get('remaining', 0.0) # Calculated only if is_enabled is False
+        # Fetch Spell Range using direct call (for now)
+        try:
+            # context = 0
+            # if self.game.om and self.game.om.local_player:
+            #      context = self.game.om.local_player.base_address
+            # print(f"Using context pointer for range lookup: {hex(context)}", "DEBUG")
+            # range_info = self.game._get_spell_range_direct_legacy(spell_id, context) # Use legacy
+            print(f"Calling Lua IsSpellInRange for SpellID {spell_id}", "DEBUG")
+            range_result = self.game.is_spell_in_range(spell_id) # Use new Lua version
 
-            if not is_enabled: # Spell's own cooldown is active
-                if remaining_cd > 0.01:
-                    cd_text = f"{remaining_cd:.1f}s"
-                    self.spell_cooldown_label.config(text=f"Cooldown: {cd_text}", foreground="orange")
-                else:
-                    # Should not happen if calculation only runs when not enabled, but handle anyway
-                    self.spell_cooldown_label.config(text="Cooldown: Active", foreground="orange")
-            else: # Spell's own cooldown is ready, but GCD might be active
-                self.spell_cooldown_label.config(text="Cooldown: Ready (GCD?)", foreground="green")
-            # print(f"GUI Cooldown Update: ID={spell_id}, Enabled={is_enabled}, Remaining={remaining_cd}", "DEBUG")
+        except Exception as e:
+            print(f"Error during Range call for SpellID {spell_id}: {e}", "ERROR")
+            # traceback.print_exc()
+
+        # Fetch Spell Cooldown using direct call
+        try:
+            # cooldown_info = self.game._get_spell_cooldown_direct_legacy(spell_id) # Use legacy
+            print(f"Calling Lua GetSpellCooldown for SpellID {spell_id}", "DEBUG")
+            cooldown_result = self.game.get_spell_cooldown(spell_id) # Use new Lua version
+        except Exception as e:
+            print(f"Error during Cooldown call for SpellID {spell_id}: {e}", "ERROR")
+            # traceback.print_exc()
+
+        # --- Update Cooldown and Range Labels --- #
+        if cooldown_result:
+            duration_ms = cooldown_result.get('duration', 0)
+            start_ms = cooldown_result.get('startTime', 0)
+            enabled = cooldown_result.get('enabled', False)
+            remaining_sec = cooldown_result.get('remaining', 0.0)
+
+            if enabled:
+                status_text = "Ready"
+                remaining_text = ""
+            else:
+                status_text = "On Cooldown"
+                remaining_text = f" ({remaining_sec:.1f}s)"
+
+            self.spell_cooldown_label.config(
+                text=f"Cooldown: {status_text}{remaining_text}"
+            )
+            # Optional detailed view:
+            # self.spell_cooldown_label.config(text=f"Cooldown: {status_text} (D:{duration_ms}ms S:{start_ms}ms){remaining_text}")
         else:
-            self.spell_cooldown_label.config(text="Cooldown: Error", foreground="red")
-            print(f"GUI Cooldown Update: Failed to get cooldown for {spell_id}", "ERROR")
+            self.spell_cooldown_label.config(text="Cooldown: Error")
 
-
-        # --- Update Range Label --- #
-        if range_info:
-            self.spell_range_label.config(text=f"Range: {range_info['maxRange']:.1f} yd")
+        # Update range label based on is_spell_in_range result (0 or 1)
+        if range_result is not None:
+            range_text = "In Range" if range_result == 1 else "Out of Range"
+            self.spell_range_label.config(text=f"Range: {range_text}")
         else:
-            self.spell_range_label.config(text="Range: Error")
+             self.spell_range_label.config(text="Range: Error")
+
+        # --- Update GCD Status Label --- #
+        gcd_active = self.game.is_gcd_active()
+        if gcd_active is None:
+            # Error reading GCD status
+            self.spell_cooldown_label.config(text="Cooldown: GCD Error", foreground="red")
+            print(f"GUI Cooldown Update: Failed to get GCD status for {spell_id}", "ERROR")
+        elif not gcd_active:
+            # GCD is ready
+            self.spell_cooldown_label.config(text="Cooldown: Ready", foreground="green")
+        else:
+            # GCD is active
+            self.spell_cooldown_label.config(text="Cooldown: GCD Active", foreground="purple")
 
 
     # --- Data Update Loop ---

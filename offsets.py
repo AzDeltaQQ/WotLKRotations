@@ -1,7 +1,75 @@
-      
-# Offsets for WoW 3.3.5a build 12340
-# Extracted from: https://github.com/johnmoore/WoW-Object-Manager/blob/master/WoWObjMgr/PlayerScan.cs
-# User confirmed verification via IDA/reversing for build 12340.
+# Offsets for WoW Client (Target Version: 3.3.5a 12340 - Based on User Analysis)
+# Offsets are relative to the process base address (e.g., 0x400000)
+
+# --- Core Pointers / Structures ---
+# Find these dynamically if possible, or update for target version
+# Example: Search for "InitializeCursor" string ref, look for push LUA_STATE_PTR near it.
+LUA_STATE_PTR = 0xD430AC # Pointer to the main Lua state (Needs confirmation for 1.15.x / 3.3.5a)
+OBJECT_MANAGER_PTR = 0 # TODO: Find Object Manager pointer offset
+CUR_OBJECT_MANAGER = 0xB47980 # Offset to current object manager static pointer? (Needs confirmation)
+
+# --- Confirmed Lua C API Functions (3.3.5a 12340 - User Analysis) ---
+LUA_GETTOP = 0x0084DBD0    # lua_gettop(L) -> int
+LUA_SETTOP = 0x0084DBF0    # lua_settop(L, index) -> void
+LUA_PUSHSTRING = 0x0084E350 # lua_pushstring(L, s) -> void
+LUA_PUSHINTEGER = 0x0084E2D0 # lua_pushinteger(L, n) -> void (Confirmed Correct)
+LUA_PUSHNUMBER = 0x0084E2A0  # lua_pushnumber(L, n) -> void (Confirmed Correct)
+LUA_TOLSTRING = 0x0084E0E0  # lua_tolstring(L, index, len) -> const char*
+LUA_TONUMBER = 0x0084E030   # lua_tonumber(L, index) -> lua_Number (double)
+LUA_TOINTEGER = 0x0084E070  # lua_tointeger(L, index) -> lua_Integer (int)
+LUA_TYPE = 0x0084DEB0       # lua_type(L, index) -> int (type ID)
+LUA_PCALL = 0x0084EC50      # lua_pcall(L, nargs, nresults, errfunc) -> int (status)
+LUA_LOADBUFFER = 0x0084F860 # lua_loadbuffer(L, buff, sz, name) -> int (status)
+
+# --- Effective lua_getglobal Sequence Start (3.3.5a 12340) ---
+# Calling this sequence directly seems to cause crashes (0x84E200). Reverting to manual lookup.
+# This address points to the start of the core instruction sequence (after the
+# WoW helper function pushes its own args) that achieves the standard
+# lua_getglobal(L, name) behavior using pushstring + getfield_by_stack_key.
+# We call this address directly after pushing our C args (L, name_ptr).
+# LUA_GETGLOBAL = 0x00818020  # Sequence start (xor edi, edi) after helper pushes - COMMENTED OUT - Causes crash?
+
+# --- WoW Custom / Modified Functions (3.3.5a 12340 - User Analysis) ---
+LUA_GETFIELD_BY_STACK_KEY = 0x0084E600 # WoW specific: getfield(L, index) - expects key on Lua stack
+FRAMESCRIPT_EXECUTE = 0x00819210      # WoW func: FrameScript_Execute(code, source, 0)
+WOW_SETFIELD = 0x0084E590             # WoW specific: setfield(L, index, key) - custom implementation
+LUA_RAWGET_HELPER = 0x00854510        # WoW C impl for rawget() Lua func
+WOW_GETGLOBALSTRINGVARIABLE = 0x00818010 # WoW helper: getglobal(L, s, char** result) -> bool
+
+# --- Confirmed Constants (3.3.5a 12340) ---
+LUA_GLOBALSINDEX = -10002 # Pseudo-index for _G (0xFFFFD8EE in hex representation)
+
+# --- UNCONFIRMED / INCORRECT Offsets (Commented Out) ---
+# These need verification or finding for the specific target client version.
+# LUA_GETGLOBAL_OLD = 0x0084E200 # Incorrect for 3.3.5a (points inside getThreadIdIfExists)
+# LUA_GETFIELD_OLD = 0x0084E1C0 # Incorrect for 3.3.5a (points to getFrameScriptOffset)
+# LUA_SETFIELD_OLD = 0x0084E5A0 # Falls inside custom WoW_SETFIELD
+# LUA_SETGLOBAL = 0 # Needs verification (0x0084E5E0 might be related/wrong)
+# LUA_CALL = 0 # Needs verification (0x0084EBE0 might be related/wrong)
+# LUA_POP = 0 # Needs verification (0x0084DC10 incorrect, use LUA_SETTOP instead)
+# LUA_PUSHNIL = 0 # Needs verification (0x0084DF90 incorrect)
+# LUA_PUSHINTEGER_OLD = 0 # Needs verification (0x0084DFF0 incorrect)
+# LUA_PUSHNUMBER_OLD = 0 # Needs verification (0x0084E010 incorrect)
+# LUA_TOBOOLEAN = 0 # Needs verification (0x0044E2C0 incorrect)
+# LUA_NEXT = 0 # Needs verification (0x0084E850 maybe?)
+
+
+# --- Game Specific Functions (Examples - Need Verification) ---
+# These are likely dynamic or different in other versions
+# SPELL_C_GET_SPELL_COOLDOWN = 0x00807980 # C func for GetSpellCooldown? (Unverified Signature)
+# SPELL_C_GET_SPELL_RANGE = 0x0080AB40    # C func for GetSpellRange? (Unverified Signature)
+# GET_GAME_TIME_MS = 0x004F4870           # Function GetTime()? Returns float seconds? (Needs Verification)
+
+
+# --- Global Cooldown (GCD) Related (Example - Needs Verification) ---
+# LIST_HEAD_BASE = 0x00C7BCD8     # Example base address for spell cooldown categories list head
+# GCD_CATEGORY_ID = 1            # Example ID for the Global Cooldown category
+# # Offsets within the cooldown linked list node structure
+# OFFSET_NEXT_NODE = 0x00        # Offset to the pointer to the next node
+# OFFSET_PREV_NODE = 0x04        # Offset to the pointer to the previous node
+# OFFSET_START_TIME = 0x1C       # Example offset to cooldown start time (ms?)
+# OFFSET_GCD_DURATION = 0x20     # Example offset to cooldown duration (ms?)
+# OFFSET_FLAGS = 0x31            # Example offset to flags byte (0x1=Active?)
 
 # Client Connection and Object Manager
 STATIC_CLIENT_CONNECTION = 0x00C79CE0
@@ -62,52 +130,23 @@ NAME_NODE_NAME_OFFSET = 0x20 # Offset to the name string itself within a name no
 # --- Lua Interface ---
 LUA_STATE = 0x00D3F78C # Pointer to the lua_State*
 
-# --- Lua C API Function Addresses (User Verified for 12340) ---
-# Core Stack/Type Functions
-LUA_GETTOP = 0x0084DBD0    # lua_gettop(lua_State *L) -> int
-LUA_SETTOP = 0x0084DBF0    # lua_settop(lua_State *L, int index) -> void
-LUA_TOLSTRING = 0x0084E0E0 # lua_tolstring(lua_State *L, int index, size_t *len) -> const char*
-LUA_TONUMBER = 0x0084E030  # lua_tonumber(lua_State *L, int index) -> lua_Number (double)
-LUA_TOINTEGER = 0x0084E070 # lua_tointeger(lua_State* L, int idx) -> int (WoW likely uses this less often than tonumber)
-LUA_TOBOOLEAN = 0x0044E2C0 # lua_toboolean(lua_State *L, int index) -> int (0 or 1)
-LUA_PUSHSTRING = 0x0084E350 # lua_pushstring(lua_State *L, const char *s) -> void
-LUA_PUSHINTEGER = 0x0084DFF0 # lua_pushinteger(lua_State *L, lua_Integer n) -> void (Assuming standard API name)
-LUA_PUSHNUMBER = 0x0084E010  # lua_pushnumber(lua_State *L, lua_Number n) -> void (Assuming standard API name)
-LUA_PUSHBOOLEAN = 0x0084DFA0 # lua_pushboolean(lua_State *L, int b) -> void (Assuming standard API name)
-LUA_PUSHNIL = 0x0084DF90     # lua_pushnil(lua_State *L) -> void (Assuming standard API name)
-LUA_POP = 0x0084DC10       # lua_pop(lua_State *L, int n) -> void (Equivalent to settop(L, -n-1))
-LUA_TYPE = 0x0084DEB0      # lua_type(lua_State *L, int index) -> int (returns LUA_T* constants)
-
-# Execution Functions
-LUA_PCALL = 0x0084EC50       # lua_pcall(lua_State*, int nargs, int nresults, int errfunc) -> int (status code)
-LUA_CALL = 0x0084EBE0        # lua_call(lua_State*, int nargs, int nresults) -> void (Use pcall for safety)
-LUA_LOADBUFFER = 0x0084F860 # luaL_loadbuffer(lua_State*, char* buff, size_t sz, char* name) -> int (status code)
-
-# Table Functions
-LUA_GETFIELD = 0x0084E1C0    # lua_getfield(lua_State *L, int index, const char *k) -> void (Pushes value onto stack)
-LUA_SETFIELD = 0x0084E5A0    # lua_setfield(lua_State *L, int index, const char *k) -> void (Pops value from stack)
-LUA_GETGLOBAL = 0x0084E200   # lua_getglobal(lua_State *L, const char *name) -> void (Pushes value onto stack)
-LUA_SETGLOBAL = 0x0084E5E0   # lua_setglobal(lua_State *L, const char *name) -> void (Pops value from stack)
-LUA_NEXT = 0x0084E850       # lua_next(lua_State *L, int index) -> int (Pops key, pushes key,value)
-
 # --- FrameScript Execute (Simpler Execution) ---
-LUA_FRAMESCRIPT_EXECUTE = 0x00819210 # Args: char* luaCode, char* executionSource = "", int a3 = 0 -> void
+# LUA_FRAMESCRIPT_EXECUTE = 0x00819210 # Args: char* luaCode, char* executionSource = "", int a3 = 0 -> void
 
 # --- Spell Functions & Data ---
-SPELL_CAST_SPELL = 0x0080DA40 # Function address for CGGameUI::CastSpell(spellId, 0)
+SPELL_CAST_SPELL = 0x0080DA40 # Function address for CGGameUI::CastSpell(spellId, 0) - User Provided
 
 # Spell Book (Addresses from user disassembly for 3.3.5a - VERIFIED)
-SPELLBOOK_START_ADDRESS = 0x00BE5D88 # Array of spell IDs or pointers? Needs structure check via IDA if reading directly.
-SPELLBOOK_SPELL_COUNT_ADDRESS = 0x00BE8D9C # Max number of spell slots?
-SPELLBOOK_SLOT_MAP_ADDRESS = 0x00BE6D88 # Mapping or related spell ID array? Seems like the list of known IDs.
-SPELLBOOK_KNOWN_SPELL_COUNT_ADDRESS = 0x00BE8D98 # Number of known spells from disassembly? Seems correct.
+SPELLBOOK_START_ADDRESS = 0x00BE5D88
+SPELLBOOK_SPELL_COUNT_ADDRESS = 0x00BE8D9C
+SPELLBOOK_SLOT_MAP_ADDRESS = 0x00BE6D88
+SPELLBOOK_KNOWN_SPELL_COUNT_ADDRESS = 0x00BE8D98
 
-# --- Cooldowns (Needs RE to determine structure/function usage - VERIFIED ADDRESSES) ---
-SPELL_COOLDOWN_PTR = 0x00D3F5AC # Pointer to cooldown structure (needs investigation via IDA)
-SPELL_C_GET_SPELL_COOLDOWN = 0x00807980 # Function address for GetSpellCooldown(spellId) -> returns cooldown info. Signature needed from IDA.
+# --- Cooldowns (Needs RE - VERIFIED ADDRESSES)
+SPELL_COOLDOWN_PTR = 0x00D3F5AC # Pointer to cooldown structure
+SPELL_C_GET_SPELL_COOLDOWN = 0x00807980 # Function address for GetSpellCooldown(spellId)
 
-# --- Other Globals (VERIFIED) ---
-# CURRENT_TARGET_GUID = 0x00BD07B0 # Already defined as LOCAL_TARGET_GUID_STATIC
+# --- Other Globals (VERIFIED)
 LAST_TARGET_GUID = 0x00BD07B8
 MOUSE_OVER_GUID = 0x00BD07A0
 COMBO_POINTS = 0x00BD084D # Static address for player combo points byte
@@ -118,31 +157,17 @@ OBJECT_CASTING_SPELL_ID = 0xA6C
 OBJECT_CHANNEL_SPELL_ID = 0xA80
 
 # --- Added from User List (3.3.5a - VERIFIED ADDRESSES) ---
-
-# Lua Spell Functions (Addresses of the C functions backing the Lua API calls)
-# These would be called via Lua C API (pcall etc.), not directly via shellcode usually
-# unless you replicate the argument setup exactly.
-# LUA_GET_SPELL_COOLDOWN = 0x00540E80 (Functionality provided by SPELL_C_GET_SPELL_COOLDOWN)
-# LUA_GET_SPELL_INFO = 0x00540A30
-
-# Direct Spell Functions (Potentially callable via C injection/calling convention - VERIFIED ADDRESSES)
 SPELL_C_GET_SPELL_RANGE = 0x00802C30 # Signature needed from IDA.
-
-# Unit Casting/Channeling Info (Offsets relative to Unit Base Address - VERIFIED)
 UNIT_CASTING_ID_OFFSET = 0xC08 # Current spell being cast
 UNIT_CHANNEL_ID_OFFSET = 0xC20 # Current spell being channeled
 
-# Aura Information (Offsets relative to Unit Base Address - VERIFIED)
-# Finding the start and size of the aura structures is key.
-AURA_COUNT_1_OFFSET = 0xDD0 # Often maximum auras possible?
-AURA_COUNT_2_OFFSET = 0xC54 # Often current active auras? Needs IDA check.
-AURA_TABLE_1_OFFSET = 0xC50 # Pointer to array/list of Aura structs (Ptr to Ptr?)
-AURA_TABLE_2_OFFSET = 0xC58 # Alternative pointer? Needs IDA check.
-AURA_STRUCT_SIZE = 0x18 # Size of each aura structure (Verify with IDA)
-AURA_STRUCT_SPELL_ID_OFFSET = 0x8 # Offset within the Aura struct for Spell ID (Verify with IDA)
-# Other aura struct offsets needed from IDA: CasterGUID (0x10?), Duration, ExpirationTime, Stacks (0xD?), Flags (0xC?)
+AURA_COUNT_1_OFFSET = 0xDD0
+AURA_COUNT_2_OFFSET = 0xC54
+AURA_TABLE_1_OFFSET = 0xC50
+AURA_TABLE_2_OFFSET = 0xC58
+AURA_STRUCT_SIZE = 0x18
+AURA_STRUCT_SPELL_ID_OFFSET = 0x8
 
-# Player Specific (Offsets likely static or relative to known base - VERIFIED)
-PLAYER_COMBO_POINTS_STATIC = 0x00BD084D # Direct address to read combo points (usually a byte)
+PLAYER_COMBO_POINTS_STATIC = 0x00BD084D
 
     
