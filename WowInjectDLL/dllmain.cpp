@@ -6,6 +6,7 @@
 #include <string>   // For command strings
 #include <vector>   // For processing dequeued commands
 #include <chrono>   // For basic timing/sleep in IPC response wait
+#include <cstdio>   // For sscanf
 
 // Explicitly define EndScene_t function pointer type here
 typedef HRESULT(WINAPI* EndScene_t)(LPDIRECT3DDEVICE9 pDevice);
@@ -24,14 +25,19 @@ volatile bool g_bShutdown = false;   // Flag to signal shutdown
 enum RequestType {
     REQ_UNKNOWN,
     REQ_EXEC_LUA,
-    REQ_GET_TIME
-    // Add REQ_GET_CD, REQ_GET_RANGE etc. later
+    REQ_GET_TIME,         // Deprecated, use GET_TIME_MS
+    REQ_GET_TIME_MS,      // New: Get time in milliseconds
+    REQ_GET_CD,           // New: Get spell cooldown
+    REQ_IS_IN_RANGE,      // New: Check spell range
+    REQ_PING              // New: Simple ping request
 };
 
 struct Request {
     RequestType type = REQ_UNKNOWN;
-    std::string data; // For Lua code or parameters like spell ID
-    // Could add more fields like unit ID later
+    std::string data;     // For Lua code
+    int spell_id = 0;     // For spell-related commands
+    std::string unit_id;  // For target unit
+    // Could add more fields like item_id later
 };
 
 std::queue<Request> g_requestQueue;      // Commands from Python -> Main Thread
@@ -52,7 +58,14 @@ lua_Execute_t lua_Execute = (lua_Execute_t)WOW_LUA_EXECUTE;
 #define LUA_PCALL_ADDR     0x0084EC50 // FrameScript_PCall
 #define LUA_TONUMBER_ADDR  0x0084E030 // FrameScript_ToNumber
 #define LUA_SETTOP_ADDR    0x0084DBF0 // FrameScript__SetTop
-// Add others like lua_tolstring (0x0084E0E0), lua_pushstring (0x0084E350) etc. as needed from user list
+#define LUA_TOLSTRING_ADDR 0x0084E0E0 // FrameScript_ToLString
+#define LUA_PUSHSTRING_ADDR 0x0084E350 // FrameScript_PushString
+#define LUA_GETGLOBAL_ADDR 0x00818010 // WoW helper: FrameScript_GetGlobal(L, name)
+#define LUA_PUSHINTEGER_ADDR 0x0084E2D0 // FrameScript_PushInteger
+#define LUA_TOINTEGER_ADDR 0x0084E070 // FrameScript_ToInteger
+#define LUA_TOBOOLEAN_ADDR 0x0044E2C0 // FrameScript_ToBoolean (Matches FrameScript list)
+#define LUA_ISNUMBER_ADDR 0x0084DF20 // FrameScript__IsNumber (From User List)
+#define LUA_ISBOOLEAN_ADDR 0x0084DFA0 // FrameScript_IsBoolean (Not in lists, assumed correct for now)
 
 #define LUA_GLOBALSINDEX -10002 // WoW's index for the global table (_G)
 
@@ -61,6 +74,18 @@ typedef int(__cdecl* lua_pcall_t)(lua_State* L, int nargs, int nresults, int err
 typedef double(__cdecl* lua_tonumber_t)(lua_State* L, int idx);
 typedef void(__cdecl* lua_settop_t)(lua_State* L, int idx);
 typedef int(__cdecl* lua_gettop_t)(lua_State* L); // Added lua_gettop typedef
+typedef const char*(__cdecl* lua_tolstring_t)(lua_State* L, int idx, size_t* len);
+typedef void(__cdecl* lua_pushstring_t)(lua_State* L, const char* s);
+typedef void(__cdecl* lua_getglobal_t)(lua_State* L, const char* name); // FrameScript_GetGlobal
+typedef void(__cdecl* lua_pushinteger_t)(lua_State* L, int n);
+typedef int(__cdecl* lua_tointeger_t)(lua_State* L, int idx);
+typedef int(__cdecl* lua_toboolean_t)(lua_State* L, int idx);
+typedef int(__cdecl* lua_isnumber_t)(lua_State* L, int idx);
+typedef int(__cdecl* lua_isboolean_t)(lua_State* L, int idx);
+
+// --- ADDED: Type checking functions ---
+typedef int(__cdecl* lua_type_t)(lua_State* L, int idx);
+
 // --- ADDED: Signature for FrameScript_Load (0x0084F860) ---
 // Returns 0 on success, pushes chunk function onto stack
 typedef int (__cdecl* lua_loadbuffer_t)(lua_State *L, const char *buff, size_t sz, const char *name);
@@ -70,6 +95,18 @@ lua_pcall_t lua_pcall = (lua_pcall_t)LUA_PCALL_ADDR;
 lua_tonumber_t lua_tonumber = (lua_tonumber_t)LUA_TONUMBER_ADDR;
 lua_settop_t lua_settop = (lua_settop_t)LUA_SETTOP_ADDR;
 lua_gettop_t lua_gettop = (lua_gettop_t)0x0084DBD0; // Added lua_gettop pointer (Address from FrameScript_GetTop)
+lua_tolstring_t lua_tolstring = (lua_tolstring_t)LUA_TOLSTRING_ADDR;
+lua_pushstring_t lua_pushstring = (lua_pushstring_t)LUA_PUSHSTRING_ADDR;
+lua_getglobal_t lua_getglobal = (lua_getglobal_t)LUA_GETGLOBAL_ADDR;
+lua_pushinteger_t lua_pushinteger = (lua_pushinteger_t)LUA_PUSHINTEGER_ADDR;
+lua_tointeger_t lua_tointeger = (lua_tointeger_t)LUA_TOINTEGER_ADDR;
+lua_toboolean_t lua_toboolean = (lua_toboolean_t)LUA_TOBOOLEAN_ADDR;
+lua_isnumber_t lua_isnumber = (lua_isnumber_t)LUA_ISNUMBER_ADDR;
+lua_isboolean_t lua_isboolean = (lua_isboolean_t)LUA_ISBOOLEAN_ADDR;
+
+// --- ADDED: Pointers for type checking ---
+lua_type_t lua_type = (lua_type_t)0x0084DEB0; // From User C# List
+
 // --- ADDED: Pointer for FrameScript_Load ---
 lua_loadbuffer_t lua_loadbuffer = (lua_loadbuffer_t)0x0084F860;
 
@@ -128,91 +165,248 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
         for (const auto& req : requestsToProcess) {
             std::string response_str = ""; // Prepare for potential response
 
-            switch (req.type) {
-                case REQ_EXEC_LUA:
-                    if (lua_Execute && !req.data.empty()) { 
-                        try {
-                            sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] hkEndScene: Executing Lua: [%.100s]...\n", req.data.c_str()); 
-                            OutputDebugStringA(log_buffer);
-                            lua_Execute(req.data.c_str(), "WowInjectDLL", 0); // Use lua_Execute
-                            // No response needed for EXEC_LUA
-                        } catch (...) {
-                            OutputDebugStringA("[WoWInjectDLL] hkEndScene: CRASH during lua_Execute!\n");
+            // Check Lua state validity for commands that need it
+            bool need_lua = (req.type == REQ_EXEC_LUA || req.type == REQ_GET_TIME_MS || req.type == REQ_GET_CD || req.type == REQ_IS_IN_RANGE);
+            if (need_lua && !L) {
+                OutputDebugStringA("[WoWInjectDLL] hkEndScene: ERROR - Lua state is NULL, cannot process Lua request!\n");
+                response_str = "ERROR:Lua state null";
+                // Still need to push the response
+            } else {
+                // Process request if Lua state is valid (or not needed)
+                switch (req.type) {
+                    case REQ_PING:
+                        OutputDebugStringA("[WoWInjectDLL] hkEndScene: Processing REQ_PING.\n");
+                        response_str = "PONG"; // Standard ping response
+                        break;
+
+                    case REQ_EXEC_LUA:
+                        if (lua_Execute && !req.data.empty()) { 
+                            try {
+                                sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] hkEndScene: Executing Lua: [%.100s]...\n", req.data.c_str()); 
+                                OutputDebugStringA(log_buffer);
+                                lua_Execute(req.data.c_str(), "WowInjectDLL", 0); // Use lua_Execute
+                                // No response needed for EXEC_LUA
+                            } catch (...) {
+                                OutputDebugStringA("[WoWInjectDLL] hkEndScene: CRASH during lua_Execute!\n");
+                            }
+                        } else if (req.data.empty()){
+                             OutputDebugStringA("[WoWInjectDLL] hkEndScene: ERROR - Empty Lua code for REQ_EXEC_LUA!\n");
+                        } else {
+                            OutputDebugStringA("[WoWInjectDLL] hkEndScene: ERROR - lua_Execute function pointer is null!\n");
                         }
-                    } else if (req.data.empty()){
-                         OutputDebugStringA("[WoWInjectDLL] hkEndScene: ERROR - Empty Lua code for REQ_EXEC_LUA!\n");
-                    } else {
-                        OutputDebugStringA("[WoWInjectDLL] hkEndScene: ERROR - lua_Execute function pointer is null!\n");
-                    }
-                    break; // No response for EXEC_LUA
+                        break; // No response for EXEC_LUA
 
-                case REQ_GET_TIME:
-                     // --- APPROACH 6: lua_loadbuffer + lua_pcall --- 
-                     if (L && lua_loadbuffer && lua_pcall && lua_gettop && lua_tonumber && lua_settop) { 
-                         try {
-                             OutputDebugStringA("[WoWInjectDLL] hkEndScene: Processing REQ_GET_TIME (Approach 6).\n");
-                             
-                             int top_before = lua_gettop(L);
-                             sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] GetTime: Lua stack top BEFORE loadbuffer: %d\n", top_before);
-                             OutputDebugStringA(log_buffer);
-                             
-                             // 1. Load the Lua code "return GetTime()"
-                             const char* luaCode = "return GetTime()";
-                             sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] GetTime: Calling lua_loadbuffer with code: %s\n", luaCode);
-                             OutputDebugStringA(log_buffer);
-                             int load_status = lua_loadbuffer(L, luaCode, strlen(luaCode), "WowInjectDLL_GetTime");
- 
-                             int top_after_get = lua_gettop(L);
-                             sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] GetTime: Load status: %d, Stack top AFTER loadbuffer: %d\n", load_status, top_after_get);
-                             OutputDebugStringA(log_buffer);
-  
-                             // Check if loadbuffer succeeded (status 0) and pushed the function chunk
-                             if (load_status == 0 && top_after_get > top_before) {
-                                 // 2. Call the loaded chunk
-                                 OutputDebugStringA("[WoWInjectDLL] GetTime: Load successful. Calling lua_pcall(L, 0, 1, 0)...\n");
-                                 if (lua_pcall(L, 0, 1, 0) == 0) { // Call GetTime(), 0 args, 1 result
-                                     double game_time = lua_tonumber(L, -1); // Get result from top of stack
-                                     lua_settop(L, -2); // Pop result
+                    case REQ_GET_TIME: // Keep old case for potential compatibility, but treat as MS
+                    case REQ_GET_TIME_MS:
+                        if (L && lua_loadbuffer && lua_pcall && lua_gettop && lua_tonumber && lua_settop) { 
+                            try {
+                                OutputDebugStringA("[WoWInjectDLL] hkEndScene: Processing REQ_GET_TIME_MS.\n");
+                                int top_before = lua_gettop(L);
+                                const char* luaCode = "local t = GetTime(); print('[DLL] GetTime() returned type:', type(t)); return t";
+                                int load_status = lua_loadbuffer(L, luaCode, strlen(luaCode), "WowInjectDLL_GetTime");
+                                
+                                if (load_status == 0 && lua_gettop(L) > top_before) {
+                                    if (lua_pcall(L, 0, 1, 0) == 0) { // Call GetTime(), 0 args, 1 result
+                                        // --- ADDED: C-API Type Logging ---
+                                        int result_type_c = -1; // Default invalid type
+                                        if (lua_type) { // Check if lua_type pointer is valid
+                                            result_type_c = lua_type(L, -1); // Get type of value at top of stack
+                                            sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] GetTime: C API sees type ID %d at stack top.\n", result_type_c);
+                                            OutputDebugStringA(log_buffer);
+                                        }
+                                        // --- End Modified Logging ---
 
-                                     // Format response string: "TIME:seconds.fraction"
-                                     char time_buf[64];
-                                     sprintf_s(time_buf, sizeof(time_buf), "TIME:%.3f", game_time); 
-                                     response_str = time_buf;
-                                     sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] GetTime: Got time %.3f. Response: %s\n", game_time, response_str.c_str());
-                                     OutputDebugStringA(log_buffer);
-                                 } else {
-                                     // pcall failed
-                                     OutputDebugStringA("[WoWInjectDLL] GetTime: lua_pcall failed!\n");
-                                     lua_settop(L, -2); // Pop error message
-                                     response_str = "ERROR:GetTime pcall failed";
-                                 }
-                             } else {
-                                 // loadbuffer failed
-                                 sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] GetTime: FAILED! lua_loadbuffer failed with status %d.\n", load_status);
-                                 OutputDebugStringA(log_buffer);
-                                 response_str = "ERROR:GetTime loadbuffer failed";
-                                 // Ensure stack is clean (pop error message or chunk if load failed but pushed something)
-                                 lua_settop(L, top_before);
-                             }
-                             // --- END APPROACH 6 --- 
-                         } catch (...) {
-                             OutputDebugStringA("[WoWInjectDLL] hkEndScene: CRASH during GetTime processing (Approach 6)!\n");
-                             response_str = "ERROR:GetTime crash";
-                                if (L) lua_settop(L, 0); // Attempt to clear stack on crash
-                         }
-                     } else {
-                          OutputDebugStringA("[WoWInjectDLL] hkEndScene: ERROR - Lua state or required Lua functions (loadbuffer, pcall, gettop, tonumber, settop) null for GetTime!\n");
-                          response_str = "ERROR:Lua state/funcs null";
-                     }
-                     break; // Response generated (or error string)
+                                        if (lua_isnumber(L, -1)) { // Check if the result is actually a number
+                                            double game_time_sec = lua_tonumber(L, -1); // Get result (seconds)
+                                            long long game_time_ms = static_cast<long long>(game_time_sec * 1000.0);
+                                            lua_settop(L, top_before); // Pop result (restore stack)
 
-                 // Add cases for REQ_GET_CD, REQ_GET_RANGE etc. here later
-                 
-                 default:
-                    OutputDebugStringA("[WoWInjectDLL] hkEndScene: Processing UNKNOWN request type!\n");
-                    response_str = "ERROR:Unknown request";
-                    break;
-            }
+                                            // Format response string: "TIME:<milliseconds>"
+                                            char time_buf[64];
+                                            sprintf_s(time_buf, sizeof(time_buf), "TIME:%lld", game_time_ms); 
+                                            response_str = time_buf;
+                                        } else {
+                                            OutputDebugStringA("[WoWInjectDLL] GetTime: pcall result was not a number! Check game chat/logs for type.\n");
+                                            lua_settop(L, top_before); // Pop non-number result (restore stack)
+                                            response_str = "ERROR:GetTime result not number";
+                                        }
+                                    } else {
+                                        const char* err_msg = lua_tolstring(L, -1, NULL);
+                                        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] GetTime: lua_pcall failed! Error: %s\n", err_msg ? err_msg : "(unknown)");
+                                        OutputDebugStringA(log_buffer);
+                                        lua_settop(L, -2); // Pop error message
+                                        response_str = "ERROR:GetTime pcall failed";
+                                    }
+                                } else {
+                                    // loadbuffer failed
+                                    sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] GetTime: lua_loadbuffer failed with status %d.\n", load_status);
+                                    OutputDebugStringA(log_buffer);
+                                    response_str = "ERROR:GetTime loadbuffer failed";
+                                    lua_settop(L, top_before); // Ensure stack is clean
+                                }
+                            } catch (...) {
+                                OutputDebugStringA("[WoWInjectDLL] hkEndScene: CRASH during GetTime processing!\n");
+                                response_str = "ERROR:GetTime crash";
+                                if (L) lua_settop(L, 0); // Attempt to clear stack
+                            }
+                        } else {
+                            OutputDebugStringA("[WoWInjectDLL] hkEndScene: ERROR - Lua state or required Lua functions null for GetTime!\n");
+                            response_str = "ERROR:Lua state/funcs null";
+                        }
+                        break; 
+
+                    case REQ_GET_CD:
+                        if (L && lua_loadbuffer && lua_pcall && lua_gettop && lua_tonumber && lua_settop && lua_isnumber && lua_isboolean && lua_toboolean) {
+                            try {
+                                sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] hkEndScene: Processing REQ_GET_CD for spell %d.\n", req.spell_id);
+                                OutputDebugStringA(log_buffer);
+                                int top_before = lua_gettop(L);
+
+                                // Construct Lua code: "local s,d,e = GetSpellCooldown(...); return s,d,e"
+                                char luaCode[128];
+                                sprintf_s(luaCode, sizeof(luaCode), "local s,d,e = GetSpellCooldown(%d); return s,d,e", req.spell_id);
+                                
+                                int load_status = lua_loadbuffer(L, luaCode, strlen(luaCode), "WowInjectDLL_GetCD");
+                                
+                                if (load_status == 0 && lua_gettop(L) > top_before) {
+                                    if (lua_pcall(L, 0, 3, 0) == 0) { // Call GetSpellCooldown(), 0 args, 3 results
+                                        // Check stack top to ensure we got 3 results (or fewer if spell invalid)
+                                        int top_after = lua_gettop(L);
+                                        int results_count = top_after - top_before;
+
+                                        long long start_ms = 0;
+                                        long long duration_ms = 0;
+                                        int enabled_int = 0; // 0=on cooldown, 1=ready (or invalid spell)
+                                        bool success = true;
+
+                                        // GetSpellCooldown returns: startTime, duration, enabled
+                                        // Stack indices are relative to top: -3, -2, -1
+
+                                        // Enabled (Top, index -1)
+                                        if (results_count >= 1 && lua_isboolean(L, -1)) { // 3rd return val is boolean 'enabled' (1 if ready)
+                                            enabled_int = lua_toboolean(L, -1);
+                                        } else if (results_count >= 1) { // If not boolean, likely nil (spell invalid or no cooldown) -> treat as ready
+                                            enabled_int = 1; // Default to ready if not boolean
+                                        } else {
+                                            success = false; // Not enough results
+                                        }
+
+                                        // Duration (Index -2)
+                                        if (success && results_count >= 2 && lua_isnumber(L, -2)) {
+                                            duration_ms = static_cast<long long>(lua_tonumber(L, -2));
+                                        } else if (success && results_count >= 2) {
+                                             // Not a number, invalid cooldown? Set duration to 0.
+                                             duration_ms = 0;
+                                        } else if (results_count < 2) {
+                                            success = false;
+                                        }
+
+                                        // Start Time (Index -3)
+                                        if (success && results_count >= 3 && lua_isnumber(L, -3)) {
+                                            start_ms = static_cast<long long>(lua_tonumber(L, -3));
+                                        } else if (success && results_count >= 3) {
+                                             // Not a number, invalid cooldown? Set start to 0.
+                                             start_ms = 0;
+                                        } else if (results_count < 3) {
+                                            success = false;
+                                        }
+
+                                        // Pop all results regardless of success
+                                        lua_settop(L, top_before); 
+
+                                        if (success) {
+                                            // Format response string: "CD:<start_ms>,<duration_ms>,<enabled_int>"
+                                            char cd_buf[128];
+                                            sprintf_s(cd_buf, sizeof(cd_buf), "CD:%lld,%lld,%d", start_ms, duration_ms, enabled_int);
+                                            response_str = cd_buf;
+                                        } else {
+                                            OutputDebugStringA("[WoWInjectDLL] GetCD: Failed to parse pcall results correctly.\n");
+                                            response_str = "CD_ERR:Result parse failed";
+                                        }
+                                    } else {
+                                        const char* err_msg = lua_tolstring(L, -1, NULL);
+                                        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] GetCD: lua_pcall failed! Error: %s\n", err_msg ? err_msg : "(unknown)");
+                                        OutputDebugStringA(log_buffer);
+                                        lua_settop(L, -2); // Pop error message
+                                        response_str = "CD_ERR:pcall failed";
+                                    }
+                                } else {
+                                    sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] GetCD: lua_loadbuffer failed with status %d.\n", load_status);
+                                    OutputDebugStringA(log_buffer);
+                                    response_str = "CD_ERR:loadbuffer failed";
+                                    lua_settop(L, top_before); // Ensure stack is clean
+                                }
+                            } catch (...) {
+                                OutputDebugStringA("[WoWInjectDLL] hkEndScene: CRASH during GetCD processing!\n");
+                                response_str = "CD_ERR:crash";
+                                if (L) lua_settop(L, 0); // Attempt to clear stack
+                            }
+                        } else {
+                            OutputDebugStringA("[WoWInjectDLL] hkEndScene: ERROR - Lua state or required Lua functions null for GetCD!\n");
+                            response_str = "CD_ERR:Lua state/funcs null";
+                        }
+                        break;
+
+                    case REQ_IS_IN_RANGE:
+                        if (L && lua_loadbuffer && lua_pcall && lua_gettop && lua_isnumber && lua_settop) { // Note: IsSpellInRange returns number (0/1) or nil
+                            try {
+                                sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] hkEndScene: Processing REQ_IS_IN_RANGE for spell %d, unit '%s'.\n", req.spell_id, req.unit_id.c_str());
+                                OutputDebugStringA(log_buffer);
+                                int top_before = lua_gettop(L);
+
+                                // Construct Lua code: "return IsSpellInRange(<spell_id_or_name>, <unit_id>)"
+                                // Passing spell ID is generally safer than name lookup
+                                char luaCode[128];
+                                // Escape the unit_id string just in case, although typically "target", "player" etc.
+                                sprintf_s(luaCode, sizeof(luaCode), "return IsSpellInRange(%d, \"%s\")", req.spell_id, req.unit_id.c_str());
+                                
+                                int load_status = lua_loadbuffer(L, luaCode, strlen(luaCode), "WowInjectDLL_Range");
+                                
+                                if (load_status == 0 && lua_gettop(L) > top_before) {
+                                    if (lua_pcall(L, 0, 1, 0) == 0) { // Call IsSpellInRange(), 0 args, 1 result
+                                        int range_result = -1; // Default to error/invalid
+                                        if (lua_isnumber(L, -1)) { // Check if result is 0 or 1
+                                            range_result = static_cast<int>(lua_tonumber(L, -1));
+                                        } else { // Result is likely nil (invalid spell/unit)
+                                            OutputDebugStringA("[WoWInjectDLL] IsInRange: Result was nil (invalid spell/unit?).\n");
+                                            range_result = -1; // Map nil to -1
+                                        }
+                                        lua_settop(L, -2); // Pop result (or nil)
+
+                                        // Format response string: "IN_RANGE:<result>"
+                                        char range_buf[64];
+                                        sprintf_s(range_buf, sizeof(range_buf), "IN_RANGE:%d", range_result);
+                                        response_str = range_buf;
+                                    } else {
+                                        const char* err_msg = lua_tolstring(L, -1, NULL);
+                                        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] IsInRange: lua_pcall failed! Error: %s\n", err_msg ? err_msg : "(unknown)");
+                                        OutputDebugStringA(log_buffer);
+                                        lua_settop(L, -2); // Pop error message
+                                        response_str = "RANGE_ERR:pcall failed";
+                                    }
+                                } else {
+                                    sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] IsInRange: lua_loadbuffer failed with status %d.\n", load_status);
+                                    OutputDebugStringA(log_buffer);
+                                    response_str = "RANGE_ERR:loadbuffer failed";
+                                    lua_settop(L, top_before); // Ensure stack is clean
+                                }
+                            } catch (...) {
+                                OutputDebugStringA("[WoWInjectDLL] hkEndScene: CRASH during IsInRange processing!\n");
+                                response_str = "RANGE_ERR:crash";
+                                if (L) lua_settop(L, 0); // Attempt to clear stack
+                            }
+                        } else {
+                            OutputDebugStringA("[WoWInjectDLL] hkEndScene: ERROR - Lua state or required Lua functions null for IsInRange!\n");
+                            response_str = "RANGE_ERR:Lua state/funcs null";
+                        }
+                        break;
+
+                    default:
+                        OutputDebugStringA("[WoWInjectDLL] hkEndScene: Processing UNKNOWN request type!\n");
+                        response_str = "ERROR:Unknown request";
+                        break;
+                } // End switch
+            } // End else (Lua state check)
 
             // If a response was generated, queue it for the IPC thread
             if (!response_str.empty()) {
@@ -252,8 +446,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             RemoveHook();
             
             // Cleanly shutdown the named pipe (signal the server thread)
-            // Ensure correct pipe name here too if changed
-             const WCHAR* pipeNameToSignal = L"\\\\.\\pipe\\WowInjectPipe"; // Match the name used in CreateNamedPipeW - FIXED BACKSLASHES
+            // --- Revert Pipe Name ---
+             const WCHAR* pipeNameToSignal = L"\\\\.\\pipe\\WowInjectPipe"; // FIXED BACKSLASHES
              HANDLE hDummyClient = CreateFileW(
                  pipeNameToSignal, 
                  GENERIC_WRITE, // Only need write access to connect/signal
@@ -351,185 +545,195 @@ void RemoveHook() {
 
 DWORD WINAPI IPCThread(LPVOID lpParam) {
     OutputDebugStringA("[WoWInjectDLL] IPC Thread started.\n");
-    const WCHAR* pipeName = L"\\\\.\\pipe\\WowInjectPipe"; // Corrected name - FIXED BACKSLASHES
-    char buffer[1024];
+    char buffer[1024 * 4]; // 4KB buffer
     DWORD bytesRead;
-    DWORD bytesWritten;
+    BOOL success;
 
-    while (!g_bShutdown) {
-        // Create Pipe Instance for this connection
-        g_hPipe = CreateNamedPipeW(
-            pipeName, PIPE_ACCESS_DUPLEX, 
-            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT, 
-            1, 1024*16, 1024*16, NMPWAIT_USE_DEFAULT_WAIT, NULL);
+    // --- REMOVED: Explicit Security Attributes --- 
+    /*
+    SECURITY_DESCRIPTOR sd;
+    SECURITY_ATTRIBUTES sa;
 
-        if (g_hPipe == INVALID_HANDLE_VALUE) {
-            // Log error and retry
-             DWORD error = GetLastError(); 
-             char error_buf[100];
-             sprintf_s(error_buf, sizeof(error_buf), "[WoWInjectDLL] Failed to create named pipe! Error: %lu\n", error);
-             OutputDebugStringA(error_buf); 
-             Sleep(1000); 
-             continue;
-        }
+    InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
+    if (!SetSecurityDescriptorDacl(&sd, TRUE, NULL, FALSE)) {
+        DWORD lastError = GetLastError();
+        char err_buf[128];
+        sprintf_s(err_buf, sizeof(err_buf), "[WoWInjectDLL] Failed to set NULL DACL! GLE=%lu\n", lastError);
+        OutputDebugStringA(err_buf);
+        return 2; 
+    }
 
-        OutputDebugStringA("[WoWInjectDLL] Pipe created. Waiting for client connection...\n");
-        BOOL connected = ConnectNamedPipe(g_hPipe, NULL) ? TRUE : (GetLastError() == ERROR_PIPE_CONNECTED);
+    sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+    sa.lpSecurityDescriptor = &sd;
+    sa.bInheritHandle = FALSE; 
+    */
+    // --- End Removed Security Attributes Setup ---
 
-        if (!connected) {
-             // Log error if not shutting down, clean up handle, retry
-             if (!g_bShutdown) { 
-                 DWORD error = GetLastError();
-                 char error_buf[100];
-                 sprintf_s(error_buf, sizeof(error_buf), "[WoWInjectDLL] Failed ConnectNamedPipe. Error: %lu\n", error);
-                 OutputDebugStringA(error_buf);
-             }
-             CloseHandle(g_hPipe);
-             g_hPipe = INVALID_HANDLE_VALUE;
-             if (!g_bShutdown) Sleep(500); 
-             continue; 
-        }
+    // Create the named pipe
+    // --- Revert Pipe Name and Max Instances, Remove Security Attributes --- 
+    g_hPipe = CreateNamedPipeW(
+        L"\\\\.\\pipe\\WowInjectPipe",      // Pipe name (WCHAR*) - FIXED BACKSLASHES
+        PIPE_ACCESS_DUPLEX,            // Read/write access
+        PIPE_TYPE_MESSAGE |            // Message type pipe
+        PIPE_READMODE_MESSAGE |        // Message-read mode
+        PIPE_WAIT,                     // Blocking mode
+        1,                             // Max. instances - Reverted to 1 like reference
+        sizeof(buffer),                // Output buffer size
+        sizeof(buffer),                // Input buffer size
+        0,                             // Default timeout
+        NULL);                         // Default security attributes - Reverted
+
+    if (g_hPipe == INVALID_HANDLE_VALUE) {
+        // --- ADDED: Log GetLastError() ---
+        DWORD lastError = GetLastError();
+        char err_buf[128];
+        sprintf_s(err_buf, sizeof(err_buf), "[WoWInjectDLL] Failed to create named pipe! GLE=%lu\n", lastError);
+        OutputDebugStringA(err_buf);
+        //OutputDebugStringA("[WoWInjectDLL] Failed to create named pipe!\n"); // Original message commented out
+        return 1;
+    }
+    OutputDebugStringA("[WoWInjectDLL] Pipe created. Waiting for client connection...\n");
+
+    // Wait for the client to connect
+    if (ConnectNamedPipe(g_hPipe, NULL) ? TRUE : (GetLastError() == ERROR_PIPE_CONNECTED)) {
         OutputDebugStringA("[WoWInjectDLL] Client connected.\n");
 
-        // Message Loop for this Client
+        // --- Communication Loop --- 
         while (!g_bShutdown) {
-            memset(buffer, 0, sizeof(buffer));
-            bytesRead = 0;
-            BOOL successRead = ReadFile(g_hPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL);
+            // --- Read Command --- 
+            success = ReadFile(
+                g_hPipe,
+                buffer,
+                sizeof(buffer) - 1, // Leave space for null terminator
+                &bytesRead,
+                NULL);
 
-            if (!successRead || bytesRead == 0) {
-                // Handle client disconnect or read error
-                DWORD error = GetLastError();
-                if (error == ERROR_BROKEN_PIPE) {
+            if (!success || bytesRead == 0) {
+                if (GetLastError() == ERROR_BROKEN_PIPE) {
                     OutputDebugStringA("[WoWInjectDLL] Client disconnected (Broken Pipe).\n");
-                } else if (!g_bShutdown) {
-                     char error_buf[100];
-                     sprintf_s(error_buf, sizeof(error_buf), "[WoWInjectDLL] ReadFile failed. Error: %lu\n", error);
-                     OutputDebugStringA(error_buf);
+                } else {
+                    char err_buf[128];
+                    sprintf_s(err_buf, sizeof(err_buf), "[WoWInjectDLL] ReadFile failed. GLE=%d\n", GetLastError());
+                    OutputDebugStringA(err_buf);
                 }
-                break; // Exit inner loop, wait for new connection
+                // Assume client disconnected, wait for new connection?
+                // For simplicity, break the loop for now.
+                 break; 
             }
 
-            // Process Command & Queue Request
-            buffer[bytesRead] = '\0';
+            buffer[bytesRead] = '\0'; // Null-terminate the received data
             std::string command(buffer);
-            HandleIPCCommand(command); // This now queues the request
+            char log_buf[256];
+            sprintf_s(log_buf, sizeof(log_buf), "[WoWInjectDLL] IPC Received Raw: [%s]\n", command.c_str());
+            OutputDebugStringA(log_buf);
 
-            // --- Wait for and Send Response ---
+            // Handle the received command (Parse and queue request)
+            HandleIPCCommand(command);
+
+            // --- MODIFIED: Wait for and Send Response (Polling) ---
             std::string responseToSend = "";
-            // Simple polling check for response (can be improved with condition variables)
-            // Check for a short time if a response is ready
-            bool foundResponse = false;
-            for(int i=0; i<5; ++i) { // Check ~5 times over ~50ms
+            bool responseFound = false;
+            // Poll for a short duration (e.g., up to 100ms) for a response to appear
+            for (int i = 0; i < 10; ++i) { // Check 10 times with 10ms sleep
                 {
                     std::lock_guard<std::mutex> lock(g_queueMutex);
                     if (!g_responseQueue.empty()) {
                         responseToSend = g_responseQueue.front();
                         g_responseQueue.pop();
-                        foundResponse = true;
-                        break; // Got response
+                        responseFound = true;
+                        break; // Found response, exit polling loop
                     }
                 }
-                 if (g_bShutdown) break; // Stop waiting if shutting down
-                 Sleep(10); // Small delay between checks
+                if (g_bShutdown) break; // Stop polling if shutting down
+                Sleep(10); // Wait briefly before next check
             }
 
-            // If no specific response generated (e.g., for EXEC_LUA or if timeout), send default ACK
-            if (!foundResponse && !g_bShutdown) {
-                 // Optionally send nothing, or a simple ACK
-                 // responseToSend = "ACK"; 
-                 // Let's send nothing for now if no response queued
-                 if (command.rfind("EXEC_LUA:", 0) != 0) { // Only log if NOT exec_lua
-                     OutputDebugStringA("[WoWInjectDLL] No response generated/found in time for command. Sending nothing.\n");
-                 }
-            } else if (g_bShutdown) {
-                 responseToSend = ""; // Don't send if shutting down
-            }
-            
-            // Only write if there's something to send
+            if (!responseFound && !g_bShutdown) {
+                // If no response was found after polling, log it (unless it was EXEC_LUA)
+                if (command.rfind("EXEC_LUA:", 0) != 0) {
+                    sprintf_s(log_buf, sizeof(log_buf), "[WoWInjectDLL] IPC WARNING: No response generated for command [%s] within timeout.\n", command.substr(0, 50).c_str());
+                    OutputDebugStringA(log_buf);
+                    // Optionally send a default error/timeout response? 
+                    // responseToSend = "ERROR:Timeout"; 
+                }
+            } 
+            // --- End Response Wait ---
+
             if (!responseToSend.empty()) {
-                bytesWritten = 0;
-                BOOL successWrite = WriteFile(
+                DWORD bytesWritten;
+                success = WriteFile(
                     g_hPipe,
                     responseToSend.c_str(),
                     (DWORD)responseToSend.length(),
                     &bytesWritten,
-                    NULL
-                );
-
-                if (!successWrite || bytesWritten != responseToSend.length()) {
-                    if (!g_bShutdown) { 
-                        DWORD error = GetLastError();
-                        char error_buf[100];
-                        sprintf_s(error_buf, sizeof(error_buf), "[WoWInjectDLL] WriteFile failed. Error: %lu\n", error);
-                        OutputDebugStringA(error_buf);
-                    }
-                    break; // Exit inner loop on write error
+                    NULL);
+                
+                if (!success || bytesWritten != responseToSend.length()) {
+                    char err_buf[128];
+                    sprintf_s(err_buf, sizeof(err_buf), "[WoWInjectDLL] WriteFile failed. GLE=%d\n", GetLastError());
+                    OutputDebugStringA(err_buf);
+                    // Handle write error, maybe client disconnected?
+                    break; 
                 } else {
-                     char log_buf[256];
-                     sprintf_s(log_buf, sizeof(log_buf), "[WoWInjectDLL] Sent response: [%.100s]...\n", responseToSend.c_str());
+                     sprintf_s(log_buf, sizeof(log_buf), "[WoWInjectDLL] Sent response: [%s]...\n", responseToSend.substr(0, 100).c_str());
                      OutputDebugStringA(log_buf);
                 }
-            }
-            
-        } // End message loop for this client
+            } 
+            // Introduce a small delay if no response was sent to prevent busy-waiting?
+            // else { Sleep(1); }
 
-        // Clean up the pipe connection for this client
-        OutputDebugStringA("[WoWInjectDLL] Disconnecting pipe instance.\n");
-        DisconnectNamedPipe(g_hPipe);
+        } // End while loop
+    } else {
+        OutputDebugStringA("[WoWInjectDLL] Failed to connect to client.\n");
+    }
+
+    // Cleanup
+    OutputDebugStringA("[WoWInjectDLL] IPC Thread exiting. Closing pipe handle.\n");
+    if (g_hPipe != INVALID_HANDLE_VALUE) {
+        DisconnectNamedPipe(g_hPipe); // Disconnect client if connected
         CloseHandle(g_hPipe);
         g_hPipe = INVALID_HANDLE_VALUE;
-
-    } // End main loop (!g_bShutdown)
-
-    OutputDebugStringA("[WoWInjectDLL] IPC Thread exiting cleanly.\n");
+    }
     return 0;
 }
 
+// Parses command string and queues a request for the main thread
 void HandleIPCCommand(const std::string& command) {
-    // Log the raw received command first
-    char log_buffer[1024];
-    sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] IPC Received Raw: [%s]\n", command.c_str());
+    Request req;
+    char log_buffer[256];
+
+    if (command == "ping") {
+        req.type = REQ_PING;
+        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type PING.\n");
+    } else if (command == "GET_TIME_MS") {
+        req.type = REQ_GET_TIME_MS;
+        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type GET_TIME_MS.\n");
+    } else if (command.rfind("EXEC_LUA:", 0) == 0) { // Check if starts with EXEC_LUA:
+        req.type = REQ_EXEC_LUA;
+        req.data = command.substr(9); // Get the Lua code part
+        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type EXEC_LUA. Data size: %zu\n", req.data.length());
+    } else if (sscanf_s(command.c_str(), "GET_CD:%d", &req.spell_id) == 1) {
+        req.type = REQ_GET_CD;
+        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type GET_CD. SpellID: %d\n", req.spell_id);
+    } else {
+        // Buffer for unit_id, assuming max length 32
+        char unit_id_buf[33] = {0}; 
+        if (sscanf_s(command.c_str(), "IS_IN_RANGE:%d,%32s", &req.spell_id, unit_id_buf, (unsigned)_countof(unit_id_buf)) == 2) {
+            req.type = REQ_IS_IN_RANGE;
+            req.unit_id = unit_id_buf;
+            sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type IS_IN_RANGE. SpellID: %d, UnitID: %s\n", req.spell_id, req.unit_id.c_str());
+        } else {
+            req.type = REQ_UNKNOWN;
+            sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Unknown command received: [%s]\n", command.substr(0, 100).c_str());
+            // Pass unknown command data for potential error response
+            req.data = command;
+        }
+    }
     OutputDebugStringA(log_buffer);
 
-    Request req; // Create request object
-
-    // --- Command Parsing --- 
-    if (command == "ping") {
-        OutputDebugStringA("[WoWInjectDLL] Parsed command: ping\n");
-        // For ping, we can directly queue a response (doesn't need main thread)
-         std::lock_guard<std::mutex> lock(g_queueMutex);
-         g_responseQueue.push("pong"); // Queue pong response immediately
-         return; // Don't queue a request for main thread
-    }
-    else if (command.rfind("EXEC_LUA:", 0) == 0) { // Check if starts with EXEC_LUA:
-        req.type = REQ_EXEC_LUA;
-        req.data = command.substr(9); // Extract code after "EXEC_LUA:"
-        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Parsed: EXEC_LUA. Code: [%.100s]...\n", req.data.c_str());
-        OutputDebugStringA(log_buffer);
-    } 
-    else if (command == "GET_TIME") {
-        req.type = REQ_GET_TIME;
-        OutputDebugStringA("[WoWInjectDLL] Parsed: GET_TIME\n");
-    }
-    // Add parsing for GET_CD, GET_RANGE etc. here later
-    // else if (command.rfind("GET_CD:", 0) == 0) { ... }
-    else {
-        req.type = REQ_UNKNOWN;
-        req.data = command;
-        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Unknown command received: [%s]\n", command.c_str());
-        OutputDebugStringA(log_buffer);
-        // Optionally queue an error response immediately?
-        // std::lock_guard<std::mutex> lock(g_queueMutex);
-        // g_responseQueue.push("ERROR:Unknown command");
-        // return; // Or queue the unknown request? Let's queue it for now.
-    }
-
-    // --- Queue the request for the main thread --- 
+    // Queue the request
     {
         std::lock_guard<std::mutex> lock(g_queueMutex);
         g_requestQueue.push(req);
-        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type %d. Queue size: %zu\n", (int)req.type, g_requestQueue.size());
-        OutputDebugStringA(log_buffer);
-    } // Mutex unlocked here
+    }
 } 
