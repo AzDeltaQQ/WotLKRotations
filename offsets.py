@@ -1,13 +1,6 @@
 # Offsets for WoW Client (Target Version: 3.3.5a 12340 - Based on User Analysis)
 # Offsets are relative to the process base address (e.g., 0x400000)
 
-# --- Core Pointers / Structures ---
-# Find these dynamically if possible, or update for target version
-# Example: Search for "InitializeCursor" string ref, look for push LUA_STATE_PTR near it.
-LUA_STATE_PTR = 0xD430AC # Pointer to the main Lua state (Needs confirmation for 1.15.x / 3.3.5a)
-OBJECT_MANAGER_PTR = 0 # TODO: Find Object Manager pointer offset
-CUR_OBJECT_MANAGER = 0xB47980 # Offset to current object manager static pointer? (Needs confirmation)
-
 # --- Confirmed Lua C API Functions (3.3.5a 12340 - User Verified List 2024-07-15) ---
 LUA_GETTOP = 0x0084DBD0    # lua_gettop(L) -> int (Updated)
 LUA_SETTOP = 0x0084DBF0    # lua_settop(L, index) -> void (Verified)
