@@ -34,10 +34,10 @@ enum RequestType {
 
 struct Request {
     RequestType type = REQ_UNKNOWN;
-    std::string data;     // For Lua code
-    int spell_id = 0;     // For spell-related commands
+    std::string data;     // For Lua code or unknown command data
+    int spell_id = 0;     // For spell ID related commands (GET_CD)
+    std::string spell_name; // For spell name related commands (IS_IN_RANGE)
     std::string unit_id;  // For target unit
-    // Could add more fields like item_id later
 };
 
 std::queue<Request> g_requestQueue;      // Commands from Python -> Main Thread
@@ -60,12 +60,11 @@ lua_Execute_t lua_Execute = (lua_Execute_t)WOW_LUA_EXECUTE;
 #define LUA_SETTOP_ADDR    0x0084DBF0 // FrameScript__SetTop
 #define LUA_TOLSTRING_ADDR 0x0084E0E0 // FrameScript_ToLString
 #define LUA_PUSHSTRING_ADDR 0x0084E350 // FrameScript_PushString
-#define LUA_GETGLOBAL_ADDR 0x00818010 // WoW helper: FrameScript_GetGlobal(L, name)
 #define LUA_PUSHINTEGER_ADDR 0x0084E2D0 // FrameScript_PushInteger
 #define LUA_TOINTEGER_ADDR 0x0084E070 // FrameScript_ToInteger
 #define LUA_TOBOOLEAN_ADDR 0x0044E2C0 // FrameScript_ToBoolean (Matches FrameScript list)
 #define LUA_ISNUMBER_ADDR 0x0084DF20 // FrameScript__IsNumber (From User List)
-#define LUA_ISBOOLEAN_ADDR 0x0084DFA0 // FrameScript_IsBoolean (Not in lists, assumed correct for now)
+#define LUA_PUSHNIL_ADDR  0x0084E280 // pushNilValue (From User Disassembly)
 
 #define LUA_GLOBALSINDEX -10002 // WoW's index for the global table (_G)
 
@@ -76,12 +75,10 @@ typedef void(__cdecl* lua_settop_t)(lua_State* L, int idx);
 typedef int(__cdecl* lua_gettop_t)(lua_State* L); // Added lua_gettop typedef
 typedef const char*(__cdecl* lua_tolstring_t)(lua_State* L, int idx, size_t* len);
 typedef void(__cdecl* lua_pushstring_t)(lua_State* L, const char* s);
-typedef void(__cdecl* lua_getglobal_t)(lua_State* L, const char* name); // FrameScript_GetGlobal
 typedef void(__cdecl* lua_pushinteger_t)(lua_State* L, int n);
 typedef int(__cdecl* lua_tointeger_t)(lua_State* L, int idx);
 typedef int(__cdecl* lua_toboolean_t)(lua_State* L, int idx);
 typedef int(__cdecl* lua_isnumber_t)(lua_State* L, int idx);
-typedef int(__cdecl* lua_isboolean_t)(lua_State* L, int idx);
 
 // --- ADDED: Type checking functions ---
 typedef int(__cdecl* lua_type_t)(lua_State* L, int idx);
@@ -97,18 +94,33 @@ lua_settop_t lua_settop = (lua_settop_t)LUA_SETTOP_ADDR;
 lua_gettop_t lua_gettop = (lua_gettop_t)0x0084DBD0; // Added lua_gettop pointer (Address from FrameScript_GetTop)
 lua_tolstring_t lua_tolstring = (lua_tolstring_t)LUA_TOLSTRING_ADDR;
 lua_pushstring_t lua_pushstring = (lua_pushstring_t)LUA_PUSHSTRING_ADDR;
-lua_getglobal_t lua_getglobal = (lua_getglobal_t)LUA_GETGLOBAL_ADDR;
 lua_pushinteger_t lua_pushinteger = (lua_pushinteger_t)LUA_PUSHINTEGER_ADDR;
 lua_tointeger_t lua_tointeger = (lua_tointeger_t)LUA_TOINTEGER_ADDR;
 lua_toboolean_t lua_toboolean = (lua_toboolean_t)LUA_TOBOOLEAN_ADDR;
 lua_isnumber_t lua_isnumber = (lua_isnumber_t)LUA_ISNUMBER_ADDR;
-lua_isboolean_t lua_isboolean = (lua_isboolean_t)LUA_ISBOOLEAN_ADDR;
 
 // --- ADDED: Pointers for type checking ---
 lua_type_t lua_type = (lua_type_t)0x0084DEB0; // From User C# List
 
 // --- ADDED: Pointer for FrameScript_Load ---
 lua_loadbuffer_t lua_loadbuffer = (lua_loadbuffer_t)0x0084F860;
+
+// --- ADDED: Typedef for lua_pushnil ---
+typedef void(__cdecl* lua_pushnil_t)(lua_State* L);
+
+// --- ADDED: Pointer for lua_pushnil ---
+lua_pushnil_t lua_pushnil = (lua_pushnil_t)LUA_PUSHNIL_ADDR;
+
+// --- CORRECTED: Define for GetSpellInfo ---
+#define LUA_GETSPELLINFO_ADDR 0x00540A30 // lua_GetSpellInfo (From User Disassembly)
+
+// --- ADDED: Typedef for GetSpellInfo ---
+// Returns multiple values (name, rank, icon, cost, isFunnel, powerType, castTime, minRange, maxRange)
+// We only care about the first (name)
+typedef int (__cdecl* lua_GetSpellInfo_t)(lua_State* L); // The function itself handles the args from stack
+
+// --- ADDED: Pointer for GetSpellInfo ---
+lua_GetSpellInfo_t lua_GetSpellInfo = (lua_GetSpellInfo_t)LUA_GETSPELLINFO_ADDR;
 
 // Helper to get Lua state
 lua_State* GetLuaState() {
@@ -256,88 +268,69 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                         break; 
 
                     case REQ_GET_CD:
-                        if (L && lua_loadbuffer && lua_pcall && lua_gettop && lua_tonumber && lua_settop && lua_isnumber && lua_isboolean && lua_toboolean) {
+                        if (L && lua_loadbuffer && lua_pushinteger && lua_pcall && lua_gettop && lua_isnumber && lua_tonumber && lua_tointeger && lua_settop && lua_tolstring) { 
                             try {
                                 sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] hkEndScene: Processing REQ_GET_CD for spell %d.\n", req.spell_id);
                                 OutputDebugStringA(log_buffer);
+
                                 int top_before = lua_gettop(L);
 
-                                // Construct Lua code: "local s,d,e = GetSpellCooldown(...); return s,d,e"
-                                char luaCode[128];
-                                sprintf_s(luaCode, sizeof(luaCode), "local s,d,e = GetSpellCooldown(%d); return s,d,e", req.spell_id);
-                                
+                                // Load chunk that takes spellId as argument via ...
+                                const char* luaCode = "local spellIdArg = ...; return GetSpellCooldown(spellIdArg)";
                                 int load_status = lua_loadbuffer(L, luaCode, strlen(luaCode), "WowInjectDLL_GetCD");
-                                
+
                                 if (load_status == 0 && lua_gettop(L) > top_before) {
-                                    if (lua_pcall(L, 0, 3, 0) == 0) { // Call GetSpellCooldown(), 0 args, 3 results
-                                        // Check stack top to ensure we got 3 results (or fewer if spell invalid)
-                                        int top_after = lua_gettop(L);
-                                        int results_count = top_after - top_before;
+                                    // Chunk function is now on the stack. Push the argument.
+                                    lua_pushinteger(L, req.spell_id); 
 
-                                        long long start_ms = 0;
-                                        long long duration_ms = 0;
-                                        int enabled_int = 0; // 0=on cooldown, 1=ready (or invalid spell)
-                                        bool success = true;
+                                    // Call the chunk function with 1 argument, expecting 3 results
+                                    if (lua_pcall(L, 1, 3, 0) == 0) { // << nargs is now 1
+                                        // Check types of results (expecting number, number, number)
+                                        if (lua_isnumber(L, -3) && lua_isnumber(L, -2) && lua_isnumber(L, -1)) { 
+                                            double start_sec = lua_tonumber(L, -3);
+                                            double duration_sec = lua_tonumber(L, -2);
+                                            int enabled = lua_tointeger(L, -1); // 0 or 1
 
-                                        // GetSpellCooldown returns: startTime, duration, enabled
-                                        // Stack indices are relative to top: -3, -2, -1
+                                            long long start_ms = static_cast<long long>(start_sec * 1000.0);
+                                            long long duration_ms = static_cast<long long>(duration_sec * 1000.0);
 
-                                        // Enabled (Top, index -1)
-                                        if (results_count >= 1 && lua_isboolean(L, -1)) { // 3rd return val is boolean 'enabled' (1 if ready)
-                                            enabled_int = lua_toboolean(L, -1);
-                                        } else if (results_count >= 1) { // If not boolean, likely nil (spell invalid or no cooldown) -> treat as ready
-                                            enabled_int = 1; // Default to ready if not boolean
-                                        } else {
-                                            success = false; // Not enough results
-                                        }
+                                            lua_settop(L, top_before); // Pop results, argument, chunk (restore stack)
 
-                                        // Duration (Index -2)
-                                        if (success && results_count >= 2 && lua_isnumber(L, -2)) {
-                                            duration_ms = static_cast<long long>(lua_tonumber(L, -2));
-                                        } else if (success && results_count >= 2) {
-                                             // Not a number, invalid cooldown? Set duration to 0.
-                                             duration_ms = 0;
-                                        } else if (results_count < 2) {
-                                            success = false;
-                                        }
-
-                                        // Start Time (Index -3)
-                                        if (success && results_count >= 3 && lua_isnumber(L, -3)) {
-                                            start_ms = static_cast<long long>(lua_tonumber(L, -3));
-                                        } else if (success && results_count >= 3) {
-                                             // Not a number, invalid cooldown? Set start to 0.
-                                             start_ms = 0;
-                                        } else if (results_count < 3) {
-                                            success = false;
-                                        }
-
-                                        // Pop all results regardless of success
-                                        lua_settop(L, top_before); 
-
-                                        if (success) {
-                                            // Format response string: "CD:<start_ms>,<duration_ms>,<enabled_int>"
+                                            // Format response: "CD:<start_ms>,<duration_ms>,<enabled_int>"
                                             char cd_buf[128];
-                                            sprintf_s(cd_buf, sizeof(cd_buf), "CD:%lld,%lld,%d", start_ms, duration_ms, enabled_int);
+                                            sprintf_s(cd_buf, sizeof(cd_buf), "CD:%lld,%lld,%d", start_ms, duration_ms, enabled);
                                             response_str = cd_buf;
                                         } else {
-                                            OutputDebugStringA("[WoWInjectDLL] GetCD: Failed to parse pcall results correctly.\n");
-                                            response_str = "CD_ERR:Result parse failed";
+                                            OutputDebugStringA("[WoWInjectDLL] GetSpellCooldown: pcall result types invalid (expected num, num, num).\n");
+                                            lua_settop(L, top_before); // Pop results, argument, chunk (restore stack)
+                                            response_str = "ERROR:GetSpellCooldown result types invalid";
                                         }
                                     } else {
-                                        const char* err_msg = lua_tolstring(L, -1, NULL);
-                                        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] GetCD: lua_pcall failed! Error: %s\n", err_msg ? err_msg : "(unknown)");
-                                        OutputDebugStringA(log_buffer);
-                                        lua_settop(L, -2); // Pop error message
-                                        response_str = "CD_ERR:pcall failed";
+                                        // Get error message from stack top
+                                        const char* errorMsg = lua_tolstring(L, -1, NULL);
+                                        char err_buf[256];
+                                        sprintf_s(err_buf, sizeof(err_buf), "[WoWInjectDLL] GetCD: lua_pcall failed! Error: %s\n", errorMsg ? errorMsg : "Unknown Lua error");
+                                        OutputDebugStringA(err_buf);
+                                        lua_settop(L, top_before); // Pop argument, chunk, error message (restore stack)
+                                        response_str = "ERROR:pcall failed"; // Simplified error
                                     }
                                 } else {
+                                    // loadbuffer failed
                                     sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] GetCD: lua_loadbuffer failed with status %d.\n", load_status);
                                     OutputDebugStringA(log_buffer);
-                                    response_str = "CD_ERR:loadbuffer failed";
+                                    response_str = "ERROR:loadbuffer failed";
                                     lua_settop(L, top_before); // Ensure stack is clean
                                 }
+
+                            } catch (const std::exception& e) {
+                                std::string errorMsg = "[WoWInjectDLL] ERROR in GetCD processing (exception): ";
+                                errorMsg += e.what();
+                                errorMsg += "\n"; // Append newline
+                                OutputDebugStringA(errorMsg.c_str());
+                                response_str = "CD_ERR:crash";
+                                if (L) lua_settop(L, 0); // Attempt to clear stack
                             } catch (...) {
-                                OutputDebugStringA("[WoWInjectDLL] hkEndScene: CRASH during GetCD processing!\n");
+                                OutputDebugStringA("[WoWInjectDLL] CRITICAL ERROR in GetCD processing: Memory access violation.\n");
                                 response_str = "CD_ERR:crash";
                                 if (L) lua_settop(L, 0); // Attempt to clear stack
                             }
@@ -348,52 +341,77 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                         break;
 
                     case REQ_IS_IN_RANGE:
-                        if (L && lua_loadbuffer && lua_pcall && lua_gettop && lua_isnumber && lua_settop) { // Note: IsSpellInRange returns number (0/1) or nil
+                        if (L && lua_loadbuffer && lua_pushinteger && lua_pushstring && lua_pcall && lua_gettop && lua_isnumber && lua_tointeger && lua_settop && lua_type && lua_tolstring) { 
                             try {
-                                sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] hkEndScene: Processing REQ_IS_IN_RANGE for spell %d, unit '%s'.\n", req.spell_id, req.unit_id.c_str());
+                                sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] hkEndScene: Processing REQ_IS_IN_RANGE for spell ID %d, unit '%s'.\n", req.spell_id, req.unit_id.c_str());
                                 OutputDebugStringA(log_buffer);
+
                                 int top_before = lua_gettop(L);
 
-                                // Construct Lua code: "return IsSpellInRange(<spell_id_or_name>, <unit_id>)"
-                                // Passing spell ID is generally safer than name lookup
-                                char luaCode[128];
-                                // Escape the unit_id string just in case, although typically "target", "player" etc.
-                                sprintf_s(luaCode, sizeof(luaCode), "return IsSpellInRange(%d, \"%s\")", req.spell_id, req.unit_id.c_str());
-                                
-                                int load_status = lua_loadbuffer(L, luaCode, strlen(luaCode), "WowInjectDLL_Range");
-                                
-                                if (load_status == 0 && lua_gettop(L) > top_before) {
-                                    if (lua_pcall(L, 0, 1, 0) == 0) { // Call IsSpellInRange(), 0 args, 1 result
-                                        int range_result = -1; // Default to error/invalid
-                                        if (lua_isnumber(L, -1)) { // Check if result is 0 or 1
-                                            range_result = static_cast<int>(lua_tonumber(L, -1));
-                                        } else { // Result is likely nil (invalid spell/unit)
-                                            OutputDebugStringA("[WoWInjectDLL] IsInRange: Result was nil (invalid spell/unit?).\n");
-                                            range_result = -1; // Map nil to -1
-                                        }
-                                        lua_settop(L, -2); // Pop result (or nil)
+                                // Load chunk that takes spellId, unitId, calls GetSpellInfo then IsSpellInRange
+                                const char* luaCode = R"( -- Lua code as raw string literal
+                                    local spellIdArg, unitIdArg = ...
+                                    local spellName = GetSpellInfo(spellIdArg)
+                                    if spellName then
+                                        return IsSpellInRange(spellName, unitIdArg)
+                                    else
+                                        print("[DLL] GetSpellInfo failed for ID:", spellIdArg)
+                                        return nil -- Indicate failure to find spell name
+                                    end
+                                )";
+                                int load_status = lua_loadbuffer(L, luaCode, strlen(luaCode), "WowInjectDLL_RangeWithNameLookup");
 
-                                        // Format response string: "IN_RANGE:<result>"
+                                if (load_status == 0 && lua_gettop(L) > top_before) {
+                                    // Chunk function is on the stack. Push arguments.
+                                    lua_pushinteger(L, req.spell_id);       // Arg 1: Spell ID (Number)
+                                    lua_pushstring(L, req.unit_id.c_str()); // Arg 2: Unit ID (String)
+
+                                    // Call the chunk function with 2 arguments, expecting 1 result
+                                    if (lua_pcall(L, 2, 1, 0) == 0) { // << nargs is 2
+                                        int result = -1; 
+                                        int result_type = lua_type(L, -1); 
+
+                                        if (result_type == 3) { // LUA_TNUMBER
+                                            result = lua_tointeger(L, -1); 
+                                        } else if (result_type == 0) { // LUA_TNIL
+                                            OutputDebugStringA("[WoWInjectDLL] IsSpellInRange returned nil (GetSpellInfo failed or invalid spell/unit/visibility?).\n");
+                                            result = -1; 
+                                        } else {
+                                             sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] IsSpellInRange returned unexpected type ID: %d.\n", result_type);
+                                             OutputDebugStringA(log_buffer);
+                                             result = -1; 
+                                        }
+                                        lua_settop(L, top_before); 
                                         char range_buf[64];
-                                        sprintf_s(range_buf, sizeof(range_buf), "IN_RANGE:%d", range_result);
+                                        sprintf_s(range_buf, sizeof(range_buf), "IN_RANGE:%d", result);
                                         response_str = range_buf;
                                     } else {
-                                        const char* err_msg = lua_tolstring(L, -1, NULL);
-                                        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] IsInRange: lua_pcall failed! Error: %s\n", err_msg ? err_msg : "(unknown)");
-                                        OutputDebugStringA(log_buffer);
-                                        lua_settop(L, -2); // Pop error message
-                                        response_str = "RANGE_ERR:pcall failed";
+                                        // pcall failed - Get error message
+                                        const char* errorMsg = lua_tolstring(L, -1, NULL);
+                                        char err_buf[256];
+                                        sprintf_s(err_buf, sizeof(err_buf), "[WoWInjectDLL] IsInRange: lua_pcall failed! Error: %s\n", errorMsg ? errorMsg : "Unknown Lua error");
+                                        OutputDebugStringA(err_buf);
+                                        lua_settop(L, top_before); // Pop args, chunk, error message (restore stack)
+                                        response_str = "RANGE_ERR:pcall failed"; 
                                     }
                                 } else {
+                                    // loadbuffer failed
                                     sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] IsInRange: lua_loadbuffer failed with status %d.\n", load_status);
                                     OutputDebugStringA(log_buffer);
                                     response_str = "RANGE_ERR:loadbuffer failed";
-                                    lua_settop(L, top_before); // Ensure stack is clean
+                                    lua_settop(L, top_before); 
                                 }
-                            } catch (...) {
-                                OutputDebugStringA("[WoWInjectDLL] hkEndScene: CRASH during IsInRange processing!\n");
+                            } catch (const std::exception& e) {
+                                std::string errorMsg = "[WoWInjectDLL] ERROR in IsInRange processing (exception): ";
+                                errorMsg += e.what();
+                                errorMsg += "\n"; 
+                                OutputDebugStringA(errorMsg.c_str());
                                 response_str = "RANGE_ERR:crash";
-                                if (L) lua_settop(L, 0); // Attempt to clear stack
+                                if (L) lua_settop(L, 0); 
+                            } catch (...) {
+                                OutputDebugStringA("[WoWInjectDLL] CRITICAL ERROR in IsInRange processing: Memory access violation.\n");
+                                response_str = "RANGE_ERR:crash";
+                                if (L) lua_settop(L, 0); 
                             }
                         } else {
                             OutputDebugStringA("[WoWInjectDLL] hkEndScene: ERROR - Lua state or required Lua functions null for IsInRange!\n");
@@ -708,9 +726,9 @@ void HandleIPCCommand(const std::string& command) {
     } else if (command == "GET_TIME_MS") {
         req.type = REQ_GET_TIME_MS;
         sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type GET_TIME_MS.\n");
-    } else if (command.rfind("EXEC_LUA:", 0) == 0) { // Check if starts with EXEC_LUA:
+    } else if (command.rfind("EXEC_LUA:", 0) == 0) {
         req.type = REQ_EXEC_LUA;
-        req.data = command.substr(9); // Get the Lua code part
+        req.data = command.substr(9);
         sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type EXEC_LUA. Data size: %zu\n", req.data.length());
     } else if (sscanf_s(command.c_str(), "GET_CD:%d", &req.spell_id) == 1) {
         req.type = REQ_GET_CD;
@@ -718,17 +736,20 @@ void HandleIPCCommand(const std::string& command) {
     } else {
         // Buffer for unit_id, assuming max length 32
         char unit_id_buf[33] = {0}; 
+        // Try parsing the IS_IN_RANGE format with spell ID
         if (sscanf_s(command.c_str(), "IS_IN_RANGE:%d,%32s", &req.spell_id, unit_id_buf, (unsigned)_countof(unit_id_buf)) == 2) {
-            req.type = REQ_IS_IN_RANGE;
-            req.unit_id = unit_id_buf;
-            sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type IS_IN_RANGE. SpellID: %d, UnitID: %s\n", req.spell_id, req.unit_id.c_str());
+             req.type = REQ_IS_IN_RANGE;
+             req.unit_id = unit_id_buf;
+             // Clear spell_name in case it was set previously
+             req.spell_name.clear(); 
+             sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type IS_IN_RANGE. SpellID: %d, UnitID: %s\n", req.spell_id, req.unit_id.c_str());
         } else {
+            // If IS_IN_RANGE format didn't match, treat as unknown
             req.type = REQ_UNKNOWN;
             sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Unknown command received: [%s]\n", command.substr(0, 100).c_str());
-            // Pass unknown command data for potential error response
             req.data = command;
         }
-    }
+    } 
     OutputDebugStringA(log_buffer);
 
     // Queue the request
