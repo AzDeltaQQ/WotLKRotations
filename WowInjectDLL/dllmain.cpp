@@ -29,15 +29,16 @@ enum RequestType {
     REQ_GET_TIME_MS,      // New: Get time in milliseconds
     REQ_GET_CD,           // New: Get spell cooldown
     REQ_IS_IN_RANGE,      // New: Check spell range
-    REQ_PING              // New: Simple ping request
+    REQ_PING,             // New: Simple ping request
+    REQ_GET_SPELL_INFO    // New: Get spell details
 };
 
 struct Request {
     RequestType type = REQ_UNKNOWN;
     std::string data;     // For Lua code or unknown command data
-    int spell_id = 0;     // For spell ID related commands (GET_CD)
-    std::string spell_name; // For spell name related commands (IS_IN_RANGE)
-    std::string unit_id;  // For target unit
+    int spell_id = 0;     // For spell ID related commands (GET_CD, IS_IN_RANGE, GET_SPELL_INFO)
+    std::string spell_name; // For spell name related commands (IS_IN_RANGE - old way, maybe remove?)
+    std::string unit_id;  // For target unit (IS_IN_RANGE)
 };
 
 std::queue<Request> g_requestQueue;      // Commands from Python -> Main Thread
@@ -178,7 +179,7 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
             std::string response_str = ""; // Prepare for potential response
 
             // Check Lua state validity for commands that need it
-            bool need_lua = (req.type == REQ_EXEC_LUA || req.type == REQ_GET_TIME_MS || req.type == REQ_GET_CD || req.type == REQ_IS_IN_RANGE);
+            bool need_lua = (req.type == REQ_EXEC_LUA || req.type == REQ_GET_TIME_MS || req.type == REQ_GET_CD || req.type == REQ_IS_IN_RANGE || req.type == REQ_GET_SPELL_INFO);
             if (need_lua && !L) {
                 OutputDebugStringA("[WoWInjectDLL] hkEndScene: ERROR - Lua state is NULL, cannot process Lua request!\n");
                 response_str = "ERROR:Lua state null";
@@ -416,6 +417,130 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                         } else {
                             OutputDebugStringA("[WoWInjectDLL] hkEndScene: ERROR - Lua state or required Lua functions null for IsInRange!\n");
                             response_str = "RANGE_ERR:Lua state/funcs null";
+                        }
+                        break;
+
+                    case REQ_GET_SPELL_INFO:
+                        // Check required function pointers
+                        if (L && lua_pushinteger && lua_GetSpellInfo && lua_gettop && lua_tolstring && lua_tonumber && lua_settop && lua_type) {
+                            try {
+                                sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] hkEndScene: Processing REQ_GET_SPELL_INFO for spell %d.\n", req.spell_id);
+                                OutputDebugStringA(log_buffer);
+
+                                int top_before = lua_gettop(L);
+
+                                // Push the spell ID argument
+                                lua_pushinteger(L, req.spell_id);
+
+                                // Call the C function lua_GetSpellInfo (WoW's implementation)
+                                // It expects 1 argument (spellId) and pushes 9 values:
+                                // name[1], rank[2], icon[3], cost[4], isFunnel[5], powerType[6], castTime[7], minRange[8], maxRange[9]
+                                // Note: Indices here are relative to the bottom of the results (top_before + 1)
+                                int num_results = lua_GetSpellInfo(L); // The function returns the number of results pushed
+
+                                if (num_results > 0) { // Check if GetSpellInfo succeeded and pushed results
+                                    // --- ADDED: Detailed Stack Logging ---
+                                    sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] lua_GetSpellInfo returned %d results. Dumping stack:", num_results);
+                                    OutputDebugStringA(log_buffer);
+                                    for (int i = 1; i <= num_results; ++i) {
+                                        int current_index = top_before + i;
+                                        int type_id = lua_type(L, current_index);
+                                        // Simple type name mapping
+                                        const char* type_name = "unknown";
+                                        switch(type_id) {
+                                            case 0: type_name = "nil"; break;
+                                            case 1: type_name = "boolean"; break;
+                                            case 2: type_name = "lightuserdata"; break;
+                                            case 3: type_name = "number"; break;
+                                            case 4: type_name = "string"; break;
+                                            case 5: type_name = "table"; break;
+                                            case 6: type_name = "function"; break;
+                                            case 7: type_name = "userdata"; break;
+                                            case 8: type_name = "thread"; break;
+                                        }
+
+                                        // Log type and attempt to log value
+                                        sprintf_s(log_buffer, sizeof(log_buffer), "  Index[%d]: Type=%d (%s)", current_index, type_id, type_name);
+                                        OutputDebugStringA(log_buffer);
+
+                                        // Print value based on type
+                                        if (type_id == 4) { // String
+                                            const char* str_val = lua_tolstring(L, current_index, NULL);
+                                            sprintf_s(log_buffer, sizeof(log_buffer), "    Value: \"%s\"", str_val ? str_val : "(null)");
+                                            OutputDebugStringA(log_buffer);
+                                        } else if (type_id == 3) { // Number
+                                            double num_val = lua_tonumber(L, current_index);
+                                            sprintf_s(log_buffer, sizeof(log_buffer), "    Value: %f", num_val);
+                                            OutputDebugStringA(log_buffer);
+                                        } else if (type_id == 1) { // Boolean
+                                             OutputDebugStringA("    Value: (boolean - value not logged to prevent crash)"); // Log placeholder
+                                        }
+                                        // Add other types if needed
+                                    }
+                                    OutputDebugStringA("[WoWInjectDLL] Stack dump complete.");
+                                    // --- END: Detailed Stack Logging ---
+
+                                    // Check if we actually got 9 results as expected before trying to access them by fixed index
+                                    // IMPORTANT: Indices below assume lua_GetSpellInfo consumed the argument OR we adjust based on logs.
+                                    // Based on logs, ID is at [1], Name at [2], Rank at [3], Icon at [4].
+                                    // The function signature expects results 1-9. Let's try indices top_before + 1 to top_before + 9
+                                    if (num_results == 9) { 
+                                        // Corrected indices based on DebugView logs for spell 2764:
+                                        const char* name = lua_tolstring(L, top_before + 2, NULL); // Index 2 is Name
+                                        const char* rank = lua_tolstring(L, top_before + 3, NULL); // Index 3 is Rank
+                                        const char* icon = lua_tolstring(L, top_before + 4, NULL); // Index 4 is Icon
+                                        // Skip cost (5), isFunnel (6), powerType (7)
+                                        double cost = lua_isnumber(L, top_before + 5) ? lua_tonumber(L, top_before + 5) : 0.0;       // Index 5 is Cost
+                                        // Skip isFunnel (6)
+                                        int powerType = lua_isnumber(L, top_before + 7) ? lua_tointeger(L, top_before + 7) : -1; // Index 7 is PowerType (0=Mana,1=Rage,3=Energy)
+                                        double castTime = lua_isnumber(L, top_before + 8) ? lua_tonumber(L, top_before + 8) : -1.0; // Index 8 is CastTime (ms)
+                                        double minRange = lua_isnumber(L, top_before + 9) ? lua_tonumber(L, top_before + 9) : -1.0; // Index 9 is MinRange
+                                        double maxRange = -1.0; // MaxRange seems missing from these results, send placeholder
+
+                                        // Format response: "SPELLINFO:<name>,<rank>,<castTime_ms>,<minRange>,<maxRange>,<icon>,<cost>,<powerType>"
+                                        char info_buf[1024];
+                                        sprintf_s(info_buf, sizeof(info_buf), "SPELLINFO:%s,%s,%.0f,%.1f,%.1f,%s,%.0f,%d",
+                                                  (name && strlen(name) > 0) ? name : "N/A",
+                                                  (rank && strlen(rank) > 0) ? rank : "N/A",
+                                                  castTime,
+                                                  minRange,
+                                                  maxRange, // Send placeholder
+                                                  (icon && strlen(icon) > 0) ? icon : "N/A",
+                                                  cost,
+                                                  powerType);
+                                        response_str = info_buf;
+                                    } else {
+                                        // GetSpellInfo likely returned nil or failed internally
+                                        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] GetSpellInfo did not return 9 results (returned %d) for spell %d.\n", num_results, req.spell_id);
+                                        OutputDebugStringA(log_buffer);
+                                        response_str = "SPELLINFO_ERR:GetSpellInfo failed";
+                                    }
+
+                                    // Clean up stack: pop results + argument (or just set top)
+                                    lua_settop(L, top_before);
+
+                                } else {
+                                    // GetSpellInfo likely returned nil or failed internally
+                                    sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] GetSpellInfo did not return any results (returned %d) for spell %d.\n", num_results, req.spell_id);
+                                    OutputDebugStringA(log_buffer);
+                                    response_str = "SPELLINFO_ERR:GetSpellInfo failed";
+                                }
+
+                            } catch (const std::exception& e) {
+                                std::string errorMsg = "[WoWInjectDLL] ERROR in GetSpellInfo processing (exception): ";
+                                errorMsg += e.what();
+                                errorMsg += "\n";
+                                OutputDebugStringA(errorMsg.c_str());
+                                response_str = "SPELLINFO_ERR:crash";
+                                if (L) lua_settop(L, 0);
+                            } catch (...) {
+                                OutputDebugStringA("[WoWInjectDLL] CRITICAL ERROR in GetSpellInfo processing: Memory access violation.\n");
+                                response_str = "SPELLINFO_ERR:crash";
+                                if (L) lua_settop(L, 0);
+                            }
+                        } else {
+                            OutputDebugStringA("[WoWInjectDLL] hkEndScene: ERROR - Lua state or required Lua functions null for GetSpellInfo!\n");
+                            response_str = "SPELLINFO_ERR:Lua state/funcs null";
                         }
                         break;
 
@@ -760,9 +885,12 @@ void HandleIPCCommand(const std::string& command) {
     } else if (sscanf_s(command.c_str(), "GET_CD:%d", &req.spell_id) == 1) {
         req.type = REQ_GET_CD;
         sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type GET_CD. SpellID: %d\n", req.spell_id);
+    } else if (sscanf_s(command.c_str(), "GET_SPELL_INFO:%d", &req.spell_id) == 1) {
+        req.type = REQ_GET_SPELL_INFO;
+        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type GET_SPELL_INFO. SpellID: %d\n", req.spell_id);
     } else {
         // Buffer for unit_id, assuming max length 32
-        char unit_id_buf[33] = {0}; 
+        char unit_id_buf[33] = {0};
         // Try parsing the IS_IN_RANGE format with spell ID
         if (sscanf_s(command.c_str(), "IS_IN_RANGE:%d,%32s", &req.spell_id, unit_id_buf, (unsigned)_countof(unit_id_buf)) == 2) {
              req.type = REQ_IS_IN_RANGE;

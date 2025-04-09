@@ -358,6 +358,52 @@ class GameInterface:
              print(f"[GameInterface] Failed to check range for {spell_id} or invalid response: {response}")
         return None
 
+    # --- ADDED: Get Spell Info via IPC ---
+    def get_spell_info(self, spell_id: int) -> Optional[dict]:
+        """
+        Gets spell details (name, rank, cast time, range, icon) using the GET_SPELL_INFO IPC command.
+        Command: "GET_SPELL_INFO:<spell_id>"
+        Response: "SPELLINFO:<name>,<rank>,<castTime_ms>,<minRange>,<maxRange>,<icon>,<cost>,<powerType>"
+                  or "SPELLINFO_ERR:<message>"
+        """
+        command = f"GET_SPELL_INFO:{spell_id}"
+        response = self.send_receive(command, timeout_s=1.0) # Use a reasonable timeout
+
+        if response and response.startswith("SPELLINFO:"):
+            try:
+                # Split the part after "SPELLINFO:"
+                parts = response.split(':', 1)[1].split(',')
+                if len(parts) == 8: # Expect 8 parts now
+                    name = parts[0] if parts[0] != "N/A" else None
+                    rank = parts[1] if parts[1] != "N/A" else None
+                    cast_time_ms = float(parts[2])
+                    min_range = float(parts[3])
+                    max_range = float(parts[4])
+                    icon = parts[5] if parts[5] != "N/A" else None
+                    cost = float(parts[6]) # Cost
+                    power_type = int(parts[7]) # Power Type ID
+
+                    return {
+                        "name": name,
+                        "rank": rank,
+                        "castTime": cast_time_ms, # Keep as ms
+                        "minRange": min_range,
+                        "maxRange": max_range,
+                        "icon": icon,
+                        "cost": cost,
+                        "powerType": power_type
+                    }
+                else:
+                    print(f"[GameInterface] Invalid SPELLINFO response format (expected 8 parts, got {len(parts)}): {response}")
+            except (ValueError, IndexError, TypeError) as e:
+                print(f"[GameInterface] Error parsing SPELLINFO response '{response}': {e}")
+        elif response and response.startswith("SPELLINFO_ERR"):
+            # print(f"[GameInterface] Spell info query for {spell_id} failed: {response}") # Debug
+            pass # Silently fail if DLL reports error
+        # else: # Reduce spam
+        #     print(f"[GameInterface] Failed to get spell info for {spell_id} or invalid/no response: {response}")
+        return None
+
     # --- Add method to get game time --- 
     def get_game_time_millis(self) -> Optional[int]:
         """

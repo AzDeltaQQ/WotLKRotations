@@ -428,6 +428,8 @@ class WowMonitorApp:
         self.spell_range_label.pack(anchor=tk.W, padx=5)
         self.spell_cooldown_label = ttk.Label(info_frame, text="Cooldown: -", style='TLabel')
         self.spell_cooldown_label.pack(anchor=tk.W, padx=5)
+        self.spell_cost_label = ttk.Label(info_frame, text="Cost: -", style='TLabel') # Add cost label
+        self.spell_cost_label.pack(anchor=tk.W, padx=5)
 
         # Known Spell IDs Button
         self.scan_spellbook_button = ttk.Button(left_pane, text="List Known Spell IDs", command=self.scan_spellbook, style='TButton')
@@ -868,138 +870,137 @@ class WowMonitorApp:
         spell_window.grab_set() # Modal focus
         self.root.wait_window(spell_window) # Wait until closed
 
-
     def lookup_spell_info(self):
-        """Looks up spell info using direct memory calls and updates labels."""
-        if not self.game or not self.game.is_ready():
-            messagebox.showerror("Error", "GameInterface is not ready. Cannot lookup spell.")
-            return
+            """Looks up spell info using the new IPC methods and updates labels."""
+            if not self.game or not self.game.is_ready():
+                messagebox.showerror("Error", "GameInterface is not ready. Cannot lookup spell.")
+                return
+            if not self.om: # Need ObjectManager for target check
+                messagebox.showerror("Error", "ObjectManager is not ready.")
+                return
 
-        spell_id_str = self.rule_spell_id_var.get().strip()
-        if not spell_id_str.isdigit():
-            messagebox.showerror("Input Error", "Please enter a valid Spell ID.")
-            return
-        spell_id = int(spell_id_str)
+            spell_id_str = self.rule_spell_id_var.get().strip()
+            if not spell_id_str.isdigit():
+                messagebox.showerror("Input Error", "Please enter a valid Spell ID.")
+                return
+            spell_id = int(spell_id_str)
 
-        # --- Display disabled message and reset labels --- #
-        self.spell_name_label.config(text="Name: Fetching...") # Indicate fetching
-        self.spell_rank_label.config(text="Rank: Fetching...") # Indicate fetching
-        self.spell_casttime_label.config(text="Cast Time: N/A") # Will get from GetSpellInfo eventually
-        self.spell_range_label.config(text="Range: Fetching...")
-        self.spell_cooldown_label.config(text="Cooldown: Fetching...")
-        self.root.update_idletasks() # Force GUI update
+            # --- Reset labels --- #
+            self.spell_name_label.config(text="Name: Fetching...")
+            self.spell_rank_label.config(text="Rank: Fetching...")
+            self.spell_casttime_label.config(text="Cast Time: Fetching...")
+            self.spell_range_label.config(text="Range: Fetching...")
+            self.spell_cooldown_label.config(text="Cooldown: Fetching...")
+            self.root.update_idletasks() # Force GUI update
 
-        # --- Call Lua Function for Name/Rank --- #
-        try:
-            print(f"Calling GetSpellInfo via pcall for SpellID {spell_id}", "DEBUG")
-            # GetSpellInfo returns: name[0], rank[1], icon[2], cost[3], isFunnel[4], powerType[5], castTime[6], minRange[7], maxRange[8]
-            spell_info_result = self.game.call_lua_function(
-                lua_func_name="GetSpellInfo",
-                args=[spell_id],
-                # Request all 9 return values (but comment out boolean)
-                return_types=[
-                    'string', 'string', 'string', 'number', #'boolean',
-                    'number', 'number', 'number', 'number'
-                ]
-            )
-        except TypeError as te:
-            print(f"Error during Lua call for Name/Rank: {te}", "ERROR")
-            # import traceback # Keep commented unless needed
-            # traceback.print_exc()
-            spell_info_result = None # Ensure it's None on error
-        except Exception as e:
-            print(f"Error during Lua call for Name/Rank: {type(e).__name__} - {e}", "ERROR")
-            spell_info_result = None # Ensure it's None on error
-
-
-        # Update Name and Rank labels using correct indices
-        if spell_info_result and len(spell_info_result) >= 2: # Need at least Name and Rank
-            # Use index 0 for Name, index 1 for Rank
-            name = spell_info_result[0]
-            rank = spell_info_result[1]
-            self.spell_name_label.config(text=f"Name: {name if name else 'Not Found'}")
-            self.spell_rank_label.config(text=f"Rank: {rank if rank else 'N/A'}")
-        else:
-            print(f"Failed to get Name/Rank for SpellID {spell_id} via Lua call. Result: {spell_info_result}", "ERROR") # Log the result
-            self.spell_name_label.config(text="Name: Lua Error")
-            self.spell_rank_label.config(text="Rank: Lua Error")
-
-        # Optionally update other labels if data is available
-        if spell_info_result and len(spell_info_result) >= 9:
-             cast_time = spell_info_result[6]
-             min_range = spell_info_result[7]
-             max_range = spell_info_result[8]
-             # Note: Range is overwritten later by is_spell_in_range, this is just for info
-             self.spell_casttime_label.config(text=f"Cast Time: {cast_time if cast_time is not None else 'N/A'}")
-             # self.spell_range_label.config(text=f"Range: {min_range:.1f}-{max_range:.1f}" if min_range is not None and max_range is not None else "Range: N/A")
-
-        # --- Call Direct Functions for Range/Cooldown --- #
-        # Initialize results
-        range_result = None
-        cooldown_result = None
-
-        # Fetch Spell Range ONLY if a target exists
-        if self.om and self.om.target:
+            # --- Fetch Spell Info (Name, Rank, Cast Time, Min/Max Range) via IPC ---
+            spell_info_result = None
             try:
-                print(f"Calling Lua IsSpellInRange for SpellID {spell_id} (Target exists)", "DEBUG")
-                range_result = self.game.is_spell_in_range(spell_id) # Use new Lua version
+                print(f"Calling game.get_spell_info for SpellID {spell_id}", "DEBUG")
+                spell_info_result = self.game.get_spell_info(spell_id)
             except Exception as e:
-                print(f"Error during Range call for SpellID {spell_id}: {e}", "ERROR")
-                # traceback.print_exc()
-        else:
-            print(f"Skipping Lua IsSpellInRange for SpellID {spell_id} (No target)", "DEBUG")
-            range_result = None # Explicitly None if no target
+                print(f"Error during get_spell_info call: {type(e).__name__} - {e}", "ERROR")
 
-        # Fetch Spell Cooldown using direct call
-        try:
-            # cooldown_info = self.game._get_spell_cooldown_direct_legacy(spell_id) # Use legacy
-            print(f"Calling Lua GetSpellCooldown for SpellID {spell_id}", "DEBUG")
-            cooldown_result = self.game.get_spell_cooldown(spell_id) # Use new Lua version
-        except Exception as e:
-            print(f"Error during Cooldown call for SpellID {spell_id}: {e}", "ERROR")
-            # traceback.print_exc()
-
-        # --- Update Cooldown and Range Labels --- #
-        if cooldown_result:
-            duration_ms = cooldown_result.get('duration', 0)
-            start_ms = cooldown_result.get('startTime', 0)
-            enabled = cooldown_result.get('enabled', False)
-            remaining_sec = cooldown_result.get('remaining', 0.0)
-
-            if enabled:
-                status_text = "Ready"
-                remaining_text = ""
+            # --- Fetch Spell Range (Boolean In Range) via IPC ---
+            range_result = None
+            if self.om.target: # Only check boolean range if target exists
+                try:
+                    print(f"Calling game.is_spell_in_range for SpellID {spell_id} (Target exists)", "DEBUG")
+                    range_result = self.game.is_spell_in_range(spell_id) # Use new Lua version
+                except Exception as e:
+                    print(f"Error during Range call for SpellID {spell_id}: {e}", "ERROR")
             else:
-                status_text = "On Cooldown"
-                remaining_text = f" ({remaining_sec:.1f}s)"
+                print(f"Skipping IsSpellInRange call for SpellID {spell_id} (No target)", "DEBUG")
 
-            self.spell_cooldown_label.config(
-                text=f"Cooldown: {status_text}{remaining_text}"
-            )
-            # Optional detailed view:
-            # self.spell_cooldown_label.config(text=f"Cooldown: {status_text} (D:{duration_ms}ms S:{start_ms}ms){remaining_text}")
-        else:
-            self.spell_cooldown_label.config(text="Cooldown: Error")
+            # --- Fetch Spell Cooldown via IPC ---
+            cooldown_result = None
+            try:
+                print(f"Calling game.get_spell_cooldown for SpellID {spell_id}", "DEBUG")
+                cooldown_result = self.game.get_spell_cooldown(spell_id) # Use new Lua version
+            except Exception as e:
+                print(f"Error during Cooldown call for SpellID {spell_id}: {e}", "ERROR")
 
-        # Update range label based on is_spell_in_range result (0 or 1)
-        if range_result is not None:
-            range_text = "In Range" if range_result == 1 else "Out of Range"
-            self.spell_range_label.config(text=f"Range: {range_text}")
-        else:
-             self.spell_range_label.config(text="Range: Error")
 
-        # --- Update GCD Status Label --- #
-        gcd_active = self.game.is_gcd_active()
-        if gcd_active is None:
-            # Error reading GCD status
-            self.spell_cooldown_label.config(text="Cooldown: GCD Error", foreground="red")
-            print(f"GUI Cooldown Update: Failed to get GCD status for {spell_id}", "ERROR")
-        elif not gcd_active:
-            # GCD is ready
-            self.spell_cooldown_label.config(text="Cooldown: Ready", foreground="green")
-        else:
-            # GCD is active
-            self.spell_cooldown_label.config(text="Cooldown: GCD Active", foreground="purple")
+            # --- Update Labels using fetched data --- #
+
+            # Update Name, Rank, Cast Time from get_spell_info result
+            if spell_info_result:
+                name = spell_info_result.get('name', 'Error')
+                rank = spell_info_result.get('rank', 'Error')
+                cast_time_ms = spell_info_result.get('castTime', -1)
+
+                self.spell_name_label.config(text=f"Name: {name if name else 'Not Found'}")
+                self.spell_rank_label.config(text=f"Rank: {rank if rank else 'N/A'}")
+                self.spell_casttime_label.config(text=f"Cast Time: {cast_time_ms/1000.0:.1f}s" if cast_time_ms >= 0 else "Cast Time: N/A")
+            else:
+                print(f"Failed to get Spell Info for SpellID {spell_id} via GameInterface.", "ERROR")
+                self.spell_name_label.config(text="Name: IPC Error")
+                self.spell_rank_label.config(text="Rank: IPC Error")
+                self.spell_casttime_label.config(text="Cast Time: Error")
+
+            # Update Range Label (Prioritize Min/Max, then boolean, then No Target/Error)
+            if spell_info_result: # Check if we got spell info data at all
+                min_r = spell_info_result.get('minRange', -1.0)
+                max_r = spell_info_result.get('maxRange', -1.0)
+                # Display Min/Max if BOTH are valid
+                if min_r >= 0 and max_r >= 0:
+                     self.spell_range_label.config(text=f"Range: {min_r:.1f}-{max_r:.1f}yd")
+                # Else, if boolean range check succeeded, use that
+                elif range_result is not None:
+                     range_text = "In Range" if range_result == 1 else "Out of Range"
+                     self.spell_range_label.config(text=f"Range: {range_text}")
+                # Else, if no target was present for range check, show "No Target"
+                elif not self.om.target:
+                     self.spell_range_label.config(text="Range: No Target")
+                # Else, fallback to generic N/A / Error
+                else:
+                     self.spell_range_label.config(text="Range: N/A / Error")
+            # If spell_info failed entirely
+            elif range_result is not None: # Still show boolean range if it succeeded
+                 range_text = "In Range" if range_result == 1 else "Out of Range"
+                 self.spell_range_label.config(text=f"Range: {range_text}")
+            elif not self.om.target: # If boolean failed because no target
+                 self.spell_range_label.config(text="Range: No Target")
+            else: # No info at all, and target exists (so it's an error)
+                 self.spell_range_label.config(text="Range: Error")
+
+
+            # Update Cooldown Label
+            if cooldown_result:
+                is_ready = cooldown_result.get('isReady', False)
+                remaining_sec = cooldown_result.get('remaining', -1.0)
+
+                if is_ready:
+                    status_text = "Ready"
+                    remaining_text = ""
+                else:
+                    status_text = "On Cooldown"
+                    remaining_text = f" ({remaining_sec:.1f}s)" if remaining_sec >= 0 else ""
+
+                self.spell_cooldown_label.config(
+                    text=f"Cooldown: {status_text}{remaining_text}"
+                )
+            else:
+                self.spell_cooldown_label.config(text="Cooldown: Error")
+
+            # Update Cost Label
+            if spell_info_result:
+                cost = spell_info_result.get('cost', -1.0)
+                power_type_id = spell_info_result.get('powerType', -1)
+
+                # Map power type ID to string
+                power_types = {
+                     -2: "Health", 0: "Mana", 1: "Rage", 2: "Focus",
+                     3: "Energy", 5: "Runes", 6: "Runic Power", -1: "N/A"
+                }
+                power_type_str = power_types.get(power_type_id, "Unknown")
+
+                if cost >= 0:
+                    self.spell_cost_label.config(text=f"Cost: {int(cost)} {power_type_str}")
+                else:
+                     self.spell_cost_label.config(text="Cost: N/A")
+            else:
+                 self.spell_cost_label.config(text="Cost: Error")
 
 
     # --- Data Update Loop ---
