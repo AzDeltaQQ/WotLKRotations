@@ -157,8 +157,8 @@ class ObjectManager:
              obj.name = self.get_player_name_from_guid(obj.guid)
          elif obj.is_unit:
              obj.name = self._get_unit_name(obj.base_address)
-         elif obj.type == WowObject.TYPE_GAMEOBJECT:
-             obj.name = self._get_gameobject_name(obj.base_address)
+         # elif obj.type == WowObject.TYPE_GAMEOBJECT: # Removed
+         #    obj.name = self._get_gameobject_name(obj.base_address) # Removed
          # Add other types if needed (GameObjects etc.)
          # else: obj.name = f"Obj_{obj.type}@{hex(obj.base_address)}" # Default fallback
 
@@ -308,35 +308,6 @@ class ObjectManager:
             return "" # Common if object is invalid
         except Exception as e:
             # print(f"Error reading unit name at {hex(unit_base_address)}: {e}") # Debug
-            return ""
-
-    def _get_gameobject_name(self, go_base_address: int) -> str:
-        """Reads GameObject name via the info pointer structure."""
-        try:
-            # Read pointer to GameObjectInfo structure
-            info_ptr_addr = go_base_address + offsets.OBJECT_GAMEOBJECT_INFO_PTR
-            info_ptr = self.mem.read_uint(info_ptr_addr)
-            if info_ptr == 0:
-                # print(f"DEBUG: GameObject at {hex(go_base_address)} has null info pointer.")
-                return ""
-
-            # Read pointer to Name string from GameObjectInfo
-            name_ptr_addr = info_ptr + offsets.GAMEOBJECT_INFO_NAME_PTR
-            name_ptr = self.mem.read_uint(name_ptr_addr)
-            if name_ptr == 0:
-                # print(f"DEBUG: GameObject info at {hex(info_ptr)} has null name pointer.")
-                return ""
-
-            # Read the actual name string
-            go_name = self.mem.read_string(name_ptr, max_length=100)
-            # print(f"DEBUG: Read GameObject name '{go_name}' from {hex(name_ptr)}")
-            return go_name
-
-        except pymem.exception.MemoryReadError:
-            # print(f"Memory Error reading GameObject name at {hex(go_base_address)}")
-            return ""
-        except Exception as e:
-            # print(f"Error reading GameObject name at {hex(go_base_address)}: {e}")
             return ""
 
     def get_objects(self, object_type_filter: Optional[int] = None) -> Generator[WowObject, None, None]:

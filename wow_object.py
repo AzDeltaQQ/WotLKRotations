@@ -7,13 +7,13 @@ logger = logging.getLogger(__name__)
 class WowObject:
     """Represents a generic World of Warcraft object (Player, NPC, Item, etc.)."""
 
-    # Object Types (from common knowledge / likely values)
+    # Object Types (Keep only Player and Unit)
     TYPE_NONE = 0
     TYPE_UNIT = 3       # NPCs, Mobs
     TYPE_PLAYER = 4
-    TYPE_GAMEOBJECT = 5 # Doors, Chests, etc.
-    TYPE_DYNAMICOBJECT = 6 # Spell visuals like Blizzard
-    TYPE_CORPSE = 7
+    # TYPE_GAMEOBJECT = 5 # Removed
+    # TYPE_DYNAMICOBJECT = 6 # Removed
+    # TYPE_CORPSE = 7 # Removed
 
     # --- Class IDs and Power Types for 3.3.5a ---
     CLASS_WARRIOR = 1
@@ -305,9 +305,9 @@ class WowObject:
             WowObject.TYPE_NONE: "None",
             WowObject.TYPE_UNIT: "Unit",
             WowObject.TYPE_PLAYER: "Player",
-            WowObject.TYPE_GAMEOBJECT: "GameObject",
-            WowObject.TYPE_DYNAMICOBJECT: "DynamicObj",
-            WowObject.TYPE_CORPSE: "Corpse"
+            # WowObject.TYPE_GAMEOBJECT: "GameObject", # Removed
+            # WowObject.TYPE_DYNAMICOBJECT: "DynamicObj", # Removed
+            # WowObject.TYPE_CORPSE: "Corpse" # Removed
         }
         return type_map.get(self.type, "Unknown")
 
@@ -315,8 +315,10 @@ class WowObject:
         name_str = self.get_name()
         type_map = {
             WowObject.TYPE_NONE: "None",
-            WowObject.TYPE_UNIT: "Unit", WowObject.TYPE_PLAYER: "Player", WowObject.TYPE_GAMEOBJECT: "GameObject",
-            WowObject.TYPE_DYNAMICOBJECT: "DynObj", WowObject.TYPE_CORPSE: "Corpse",
+            WowObject.TYPE_UNIT: "Unit", WowObject.TYPE_PLAYER: "Player",
+            # WowObject.TYPE_GAMEOBJECT: "GameObject", # Removed
+            # WowObject.TYPE_DYNAMICOBJECT: "DynObj", # Removed
+            # WowObject.TYPE_CORPSE: "Corpse", # Removed
         }
         obj_type_str = type_map.get(self.type, f"Type{self.type}")
         guid_hex = f"0x{self.guid:X}"

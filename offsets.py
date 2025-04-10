@@ -142,7 +142,7 @@ AURA_STRUCT_SPELL_ID_OFFSET = 0x8
 PLAYER_COMBO_POINTS_STATIC = 0x00BD084D
 
 # --- GameObject Specific Offsets (Needs Verification) ---
-OBJECT_GAMEOBJECT_INFO_PTR = 0x1EC # Relative to GameObject Base -> Points to GameObjectInfo structure
-GAMEOBJECT_INFO_NAME_PTR = 0xB4   # Relative to GameObjectInfo Ptr -> Points to Name string
+# OBJECT_GAMEOBJECT_INFO_PTR = 0x1EC # Removed
+# GAMEOBJECT_INFO_NAME_PTR = 0xB4   # Removed
 
     

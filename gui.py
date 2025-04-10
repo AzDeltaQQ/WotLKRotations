@@ -130,12 +130,12 @@ class WowMonitorApp:
         self.target_status_var = tk.StringVar(value="N/A")
         self.target_dist_var = tk.StringVar(value="N/A")
 
-        # --- Initialize Filter Variables (Default: Show Units & Players) ---
+        # --- Initialize Filter Variables (Only Units & Players) ---
         self.filter_show_units_var = tk.BooleanVar(value=True)
         self.filter_show_players_var = tk.BooleanVar(value=True)
-        self.filter_show_gameobjects_var = tk.BooleanVar(value=False) # Keep GOs off by default for now
-        self.filter_show_dynamicobj_var = tk.BooleanVar(value=False)
-        self.filter_show_corpses_var = tk.BooleanVar(value=False)
+        # self.filter_show_gameobjects_var = tk.BooleanVar(value=False) # Removed
+        # self.filter_show_dynamicobj_var = tk.BooleanVar(value=False) # Removed
+        # self.filter_show_corpses_var = tk.BooleanVar(value=False) # Removed
 
         # --- Initialize Editor Data ---
         self.rule_conditions = ["None", "Target Exists", "Target Attackable", "Is Casting", "Target Is Casting",
@@ -388,7 +388,8 @@ class WowMonitorApp:
             return
         self.log_message("Executing Lua from input box...", "ACTION")
         try:
-            results = self.game.run_lua(lua_code)
+            # results = self.game.run_lua(lua_code) # Incorrect method name
+            results = self.game.execute(lua_code) # Correct method name
             self.lua_output_text.config(state=tk.NORMAL)
             self.lua_output_text.delete("1.0", tk.END)
             if results is not None:
@@ -1461,9 +1462,9 @@ class WowMonitorApp:
             type_filter_map = {
                 WowObject.TYPE_PLAYER: self.filter_show_players_var.get(),
                 WowObject.TYPE_UNIT: self.filter_show_units_var.get(),
-                WowObject.TYPE_GAMEOBJECT: self.filter_show_gameobjects_var.get(),
-                WowObject.TYPE_DYNAMICOBJECT: self.filter_show_dynamicobj_var.get(),
-                WowObject.TYPE_CORPSE: self.filter_show_corpses_var.get(),
+                # WowObject.TYPE_GAMEOBJECT: self.filter_show_gameobjects_var.get(), # Removed
+                # WowObject.TYPE_DYNAMICOBJECT: self.filter_show_dynamicobj_var.get(), # Removed
+                # WowObject.TYPE_CORPSE: self.filter_show_corpses_var.get(), # Removed
                 # Add others if needed, default to False if type not in map
             }
 
@@ -1575,9 +1576,9 @@ class WowMonitorApp:
         filter_map = {
             WowObject.TYPE_PLAYER: (self.filter_show_players_var, "Players"),
             WowObject.TYPE_UNIT: (self.filter_show_units_var, "Units (NPCs/Mobs)"),
-            WowObject.TYPE_GAMEOBJECT: (self.filter_show_gameobjects_var, "Game Objects"),
-            WowObject.TYPE_DYNAMICOBJECT: (self.filter_show_dynamicobj_var, "Dynamic Objects"),
-            WowObject.TYPE_CORPSE: (self.filter_show_corpses_var, "Corpses"),
+            # WowObject.TYPE_GAMEOBJECT: (self.filter_show_gameobjects_var, "Game Objects"), # Removed
+            # WowObject.TYPE_DYNAMICOBJECT: (self.filter_show_dynamicobj_var, "Dynamic Objects"), # Removed
+            # WowObject.TYPE_CORPSE: (self.filter_show_corpses_var, "Corpses"), # Removed
         }
 
         for obj_type, (var, label) in filter_map.items():

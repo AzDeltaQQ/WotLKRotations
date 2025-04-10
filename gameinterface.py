@@ -5,7 +5,7 @@ import pymem # Keep for process finding? Maybe remove later if not needed.
 import offsets # Keep for LUA_STATE and function addrs if needed by DLL
 from memory import MemoryHandler # Keep if mem handler needed for other tasks
 # from object_manager import ObjectManager # No longer needed directly here
-from typing import Optional # Union, Any, List, Tuple - Removed unused
+from typing import Optional, List # Union, Any, List, Tuple - Removed unused
 
 # --- Pipe Constants ---
 PIPE_NAME = r'\\.\pipe\WowInjectPipe' # Raw string literal
@@ -242,6 +242,8 @@ class GameInterface:
             expected_prefix = "CP:"
         elif command == "GET_KNOWN_SPELLS":
              expected_prefix = "KNOWN_SPELLS:"
+        elif command.startswith("EXEC_LUA:"):
+            expected_prefix = "LUA_RESULT:"
         # Add other command prefixes here
 
         if expected_prefix is None:
@@ -421,30 +423,42 @@ class GameInterface:
 
     # --- High-Level Actions (To be adapted for IPC) ---
 
-    def execute(self, lua_code: str, source_name: str = "PyWoWExec") -> bool:
+    def execute(self, lua_code: str, source_name: str = "PyWoWExec") -> Optional[List[str]]:
         """
         Sends Lua code to the injected DLL for execution on the main thread.
         Uses a specific command format, e.g., "EXEC_LUA:<lua_code_here>"
-        Returns True if the command was sent successfully, False otherwise.
-        (Actual execution success determined by DLL/response if needed)
+        Waits for a response (LUA_RESULT:...) and returns a list of result strings.
         """
         if not self.is_ready():
             print("[GameInterface] Cannot execute Lua: Pipe not connected.")
-            return False
+            return None # Return None for error/not ready
         if not lua_code:
             print("[GameInterface] Warning: Empty Lua code provided to execute().")
-            return False
+            return [] # Return empty list for empty code?
 
         # Format the command for the DLL
-        # Using a simple prefix convention. More robust might be JSON etc.
-        command = f"EXEC_LUA:{lua_code}" 
-        
-        # Send the command - Fire and forget for now
-        # Could adapt to use send_receive if DLL sends back success/failure
-        success = self.send_command(command)
-        if not success:
-             print(f"[GameInterface] Failed to send EXEC_LUA command for code: {lua_code[:50]}...")
-        return success
+        command = f"EXEC_LUA:{lua_code}"
+
+        # Use send_receive to wait for the result
+        response = self.send_receive(command, timeout_ms=15000) # Allow longer timeout for Lua execution
+
+        if response and response.startswith("LUA_RESULT:"):
+            try:
+                # Extract the comma-separated results after the prefix
+                result_part = response.split(':', 1)[1]
+                # Return an empty list if the result part is empty, otherwise split
+                results = result_part.split(',') if result_part else []
+                print(f"[GameInterface] Lua results received: {results}")
+                return results
+            except Exception as e:
+                print(f"[GameInterface] Error parsing LUA_RESULT response '{response}': {e}")
+                return None # Indicate parsing error
+        elif response:
+             print(f"[GameInterface] Unexpected response to EXEC_LUA: {response[:100]}...")
+             return None # Indicate unexpected response
+        else:
+             print(f"[GameInterface] No or invalid response to EXEC_LUA command for code: {lua_code[:50]}...")
+             return None # Indicate timeout or connection error
 
 
     def ping_dll(self) -> bool:
