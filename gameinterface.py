@@ -19,6 +19,7 @@ GENERIC_WRITE = 0x40000000
 OPEN_EXISTING = 3
 FILE_ATTRIBUTE_NORMAL = 0x80
 ERROR_PIPE_BUSY = 231
+ERROR_BROKEN_PIPE = 109
 
 # Kernel32 Functions needed for Pipes
 kernel32 = ctypes.windll.kernel32
@@ -28,6 +29,8 @@ ReadFile = kernel32.ReadFile
 CloseHandle = kernel32.CloseHandle
 WaitNamedPipeW = kernel32.WaitNamedPipeW
 GetLastError = kernel32.GetLastError
+FlushFileBuffers = kernel32.FlushFileBuffers
+PeekNamedPipe = kernel32.PeekNamedPipe
 
 # Define argument types for clarity and correctness
 CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
@@ -40,6 +43,17 @@ ReadFile.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD, ctypes.PO
 ReadFile.restype = wintypes.BOOL
 CloseHandle.argtypes = [wintypes.HANDLE]
 CloseHandle.restype = wintypes.BOOL
+FlushFileBuffers.argtypes = [wintypes.HANDLE]
+FlushFileBuffers.restype = wintypes.BOOL
+PeekNamedPipe.argtypes = [
+    wintypes.HANDLE,
+    wintypes.LPVOID,
+    wintypes.DWORD,
+    ctypes.POINTER(wintypes.DWORD),
+    ctypes.POINTER(wintypes.DWORD),
+    ctypes.POINTER(wintypes.DWORD)
+]
+PeekNamedPipe.restype = wintypes.BOOL
 
 
 class GameInterface:
@@ -205,74 +219,205 @@ class GameInterface:
             return None
 
 
-    def send_receive(self, command: str, timeout_s: float = 5.0) -> Optional[str]:
-        """Sends a command and waits for the *correct* response, discarding mismatches."""
+    def send_receive(self, command: str, timeout_ms: int = 10000) -> Optional[str]:
+        """Sends a command and waits for a specific response prefix."""
         if not self.is_ready():
-            print("[GameInterface] Cannot send/receive: Pipe not connected.")
+            print("[GameInterface] Cannot send command: Pipe not connected.")
             return None
 
-        # Determine expected response prefix based on command
         expected_prefix = None
-        if command == "ping": expected_prefix = "PONG"
-        elif command == "GET_TIME_MS": expected_prefix = "TIME:"
-        elif command.startswith("GET_CD:"): expected_prefix = "CD:" # Covers CD: and CD_ERR:
-        elif command.startswith("GET_RANGE:"): expected_prefix = "RANGE:"
-        elif command.startswith("IS_IN_RANGE:"): expected_prefix = "IN_RANGE:" # Covers IN_RANGE: and RANGE_ERR:
-        elif command.startswith("GET_SPELL_INFO:"): expected_prefix = "SPELLINFO:" # Covers SPELLINFO: and SPELLINFO_ERR:
-        elif command.startswith("CAST_SPELL:"): expected_prefix = "CAST_" # Covers CAST_SENT: and CAST_ERR:
-        # EXEC_LUA currently doesn't expect a specific response format, handle separately if needed
+        if command.startswith("GET_UNIT_INFO"):
+            expected_prefix = "UNIT_INFO:"
+        elif command.startswith("GET_PLAYER_INFO"):
+            expected_prefix = "PLAYER_INFO:"
+        elif command == "GET_TARGET_GUID":
+            expected_prefix = "TARGET_GUID:"
+        elif command.startswith("CAST_SPELL"):
+            expected_prefix = "CAST_RESULT:"
+        elif command.startswith("RUN_LUA"):
+            expected_prefix = "LUA_RESULT:"
+        elif command.startswith("GET_SPELL_INFO"):
+            expected_prefix = "SPELL_INFO:"
+        elif command == "GET_COMBO_POINTS":
+            expected_prefix = "CP:"
+        elif command == "GET_KNOWN_SPELLS":
+             expected_prefix = "KNOWN_SPELLS:"
+        # Add other command prefixes here
 
-        if not expected_prefix and not command.startswith("EXEC_LUA:"):
-            print(f"[GameInterface] Warning: Unknown command format for send_receive: {command}")
-            # Proceed but might fail if DLL sends unexpected response
+        if expected_prefix is None:
+            print(f"[GameInterface] Warning: No expected prefix defined for command: {command}")
+            return None
 
-        # Send the command first
-        if not self.send_command(command):
-            return None # Send failed
+        try:
+            # Ensure pipe handle is valid
+            if self.pipe_handle == INVALID_HANDLE_VALUE:
+                print("[GameInterface] Warning: Pipe handle is invalid. Attempting reconnect...")
+                self.connect_pipe() # Attempt to reconnect
+                if not self.is_ready(): return None # Reconnect failed
 
-        start_time = time.time()
-        attempts = 0
-        max_attempts = 10 # Limit attempts to prevent infinite loops
+            print(f"[GameInterface] Sending command: {command}")
+            # Encode command with null terminator
+            request = (command + '\0').encode('utf-8')
+            # Send command
+            bytes_written = wintypes.DWORD(0)
+            success = WriteFile(
+                self.pipe_handle,
+                request,
+                len(request),
+                ctypes.byref(bytes_written),
+                None # Not overlapped
+            )
+            if not success or bytes_written.value != len(request):
+                error_code = GetLastError()
+                print(f"[GameInterface] Failed to write command to pipe. Success: {success}, Written: {bytes_written.value}/{len(request)}, Error: {error_code}")
+                self.disconnect_pipe() # Disconnect on error
+                return None
+            if not FlushFileBuffers(self.pipe_handle):
+                 error_code = GetLastError()
+                 print(f"[GameInterface] Warning: FlushFileBuffers failed after write. Error: {error_code}")
+            print(f"[GameInterface] Sent {bytes_written.value} bytes.")
 
-        while time.time() - start_time < timeout_s and attempts < max_attempts:
-            attempts += 1
-            # Use a shorter internal timeout for each ReadFile attempt within the loop
-            # This allows quicker checking for subsequent messages if the first is wrong.
-            response = self.receive_response(timeout_s=max(0.1, timeout_s / max_attempts))
+            # Receive response
+            start_time = time.time()
+            buffer = b""
+            while True:
+                last_error = 0 # Track last error
+                try:
+                    # Check time elapsed
+                    if (time.time() - start_time) * 1000 > timeout_ms:
+                        print(f"[GameInterface] Timeout waiting for response prefix '{expected_prefix}' for command '{command}'. Buffer: {buffer[:200]}")
+                        self._clear_pipe_buffer() # Attempt to clear stale data
+                        return None
 
-            if response is not None:
-                # Check if the received response matches the expected type
-                if expected_prefix and response.startswith(expected_prefix):
-                    # print(f"[GameInterface] Received expected response for '{command}': '{response}'") # Debug success
-                    return response # Found the correct response
-                # Handle EXEC_LUA which might not have a standard response or prefix
-                elif command.startswith("EXEC_LUA:"):
-                     # Currently, EXEC_LUA doesn't expect a reply. If it reads *anything*,
-                     # it's likely a leftover response. We should probably just return None or True
-                     # after sending, but if we *do* read something, log it and discard.
-                     print(f"[GameInterface] Warning: Received unexpected response after EXEC_LUA: '{response}'. Discarding.")
-                     # Continue loop to potentially clear buffer or hit timeout/max_attempts
-                else:
-                    # Received something, but it's not what we expected for this command
-                    print(f"[GameInterface] Warning: Received unexpected response '{response}' while waiting for '{expected_prefix}' (Command: '{command}'). Discarding.")
-                    # Continue the loop to try reading again
-            else:
-                # receive_response returned None (timeout or error/disconnect)
-                if not self.is_ready():
-                    print("[GameInterface] Pipe disconnected during receive loop.")
-                    return None # Pipe broke, exit
-                # If receive_response timed out on this attempt, continue loop until overall timeout
-                # print(f"[GameInterface] receive_response returned None (attempt {attempts}). Continuing loop.") # Debug
+                    # Peek at the pipe using kernel32.PeekNamedPipe
+                    bytes_avail = wintypes.DWORD(0)
+                    total_bytes_avail = wintypes.DWORD(0)
+                    # bytes_left = wintypes.DWORD(0) # Not typically needed for byte stream pipes
 
-            # Optional small delay to prevent tight spinning if receive_response returns None quickly
-            # time.sleep(0.01)
+                    # We only need to know if *any* bytes are available
+                    peek_success = PeekNamedPipe(
+                        self.pipe_handle,
+                        None, # Don't read into buffer yet
+                        0,    # Buffer size 0
+                        ctypes.byref(bytes_avail), # Ptr to bytes read (usually 0)
+                        ctypes.byref(total_bytes_avail), # Ptr to total bytes available
+                        None # lpBytesLeftThisMessage (NULL)
+                    )
 
-        # Loop finished due to timeout or max attempts
-        if expected_prefix:
-            print(f"[GameInterface] Timeout or max attempts reached waiting for '{expected_prefix}' response to command '{command}'.")
-        else:
-            print(f"[GameInterface] Timeout or max attempts reached after command '{command}'.")
-        return None
+                    if not peek_success:
+                        last_error = GetLastError()
+                        if last_error == ERROR_BROKEN_PIPE:
+                            print("[GameInterface] Pipe broken during peek.")
+                            self.disconnect_pipe()
+                            return None
+                        else:
+                            print(f"[GameInterface] PeekNamedPipe failed. Error: {last_error}")
+                            # Avoid tight loop on persistent peek error
+                            time.sleep(0.1)
+                            continue # Try peeking again after a delay
+
+                    # Now check if total_bytes_avail > 0
+                    if total_bytes_avail.value > 0:
+                        # Read only available bytes (up to a limit to avoid huge reads)
+                        read_size = min(total_bytes_avail.value, 4096)
+                        read_buffer = ctypes.create_string_buffer(read_size)
+                        bytes_actually_read = wintypes.DWORD(0)
+
+                        read_success = ReadFile(
+                            self.pipe_handle,
+                            read_buffer,
+                            read_size,
+                            ctypes.byref(bytes_actually_read),
+                            None
+                        )
+
+                        if not read_success or bytes_actually_read.value == 0:
+                             last_error = GetLastError()
+                             if last_error == ERROR_BROKEN_PIPE:
+                                 print("[GameInterface] Pipe broken during read.")
+                                 self.disconnect_pipe()
+                                 return None
+                             else:
+                                 print(f"[GameInterface] ReadFile failed after peek indicated data. Error: {last_error}")
+                                 # Possible race condition or other error, wait and retry loop
+                                 time.sleep(0.05)
+                                 continue
+
+                        # Append successfully read data
+                        buffer += read_buffer.raw[:bytes_actually_read.value]
+                        print(f"[GameInterface] Read {bytes_actually_read.value} bytes, total buffer {len(buffer)} bytes.")
+
+                        # Check if buffer contains the null terminator marking end of message
+                        if b'\0' in buffer:
+                            message, _, remaining_buffer = buffer.partition(b'\0')
+                            decoded_message = message.decode('utf-8', errors='replace').strip()
+                            print(f"[GameInterface] Received full message: [{decoded_message[:200]}...] (Remaining buffer: {len(remaining_buffer)} bytes)")
+
+                            if decoded_message.startswith(expected_prefix):
+                                return decoded_message # Success!
+                            else:
+                                # Log unexpected message and discard it
+                                print(f"[GameInterface] Warning: Received unexpected response '{decoded_message[:100]}...' while waiting for '{expected_prefix}' (Command: '{command}'). Discarding.")
+                                # Reset buffer to only contain the remaining part AFTER the null terminator
+                                buffer = remaining_buffer
+                                # Continue loop to wait for the correct message or timeout
+                        # else: Null terminator not found yet, continue reading
+
+                    else:
+                        # No data available, wait briefly
+                        time.sleep(0.01) # Small sleep to avoid busy-waiting
+
+                except Exception as e:
+                    # Catch other potential programming errors
+                    print(f"[GameInterface] Unexpected Python error during pipe receive loop: {e}")
+                    # Log the traceback for debugging
+                    import traceback
+                    traceback.print_exc()
+                    self.disconnect_pipe()
+                    return None
+
+        except Exception as e:
+            # Catch errors during send or initial setup
+            print(f"[GameInterface] Error sending/receiving command '{command}': {e}")
+            # Log the traceback for debugging
+            import traceback
+            traceback.print_exc()
+            # Ensure pipe is disconnected if error occurred during send
+            last_error = GetLastError() # Check if OS error code provides hint
+            if last_error == ERROR_BROKEN_PIPE:
+                 print("[GameInterface] Pipe likely broken during send attempt.")
+                 self.disconnect_pipe()
+            elif self.is_ready(): # If error wasn't pipe related, still disconnect? Maybe not.
+                 # Consider if self.disconnect_pipe() should always happen here
+                 pass
+            return None
+
+    def _clear_pipe_buffer(self):
+        """Attempts to read any remaining data in the pipe to clear it after a timeout or error."""
+        if not self.is_ready():
+            return
+        try:
+            print("[GameInterface] Attempting to clear stale pipe buffer...")
+            total_cleared = 0
+            while True:
+                bytes_avail = wintypes.DWORD(0)
+                total_bytes_avail = wintypes.DWORD(0)
+                peek_success = PeekNamedPipe(self.pipe_handle, None, 0, ctypes.byref(bytes_avail), ctypes.byref(total_bytes_avail), None)
+                if not peek_success or total_bytes_avail.value == 0:
+                    break # No more data or error peeking
+
+                read_size = min(total_bytes_avail.value, 4096)
+                read_buffer = ctypes.create_string_buffer(read_size)
+                bytes_actually_read = wintypes.DWORD(0)
+                read_success = ReadFile(self.pipe_handle, read_buffer, read_size, ctypes.byref(bytes_actually_read), None)
+
+                if not read_success or bytes_actually_read.value == 0:
+                    break # Error reading or no bytes read
+                total_cleared += bytes_actually_read.value
+            print(f"[GameInterface] Cleared approximately {total_cleared} bytes from pipe.")
+        except Exception as e:
+            print(f"[GameInterface] Error while clearing pipe buffer: {e}")
+            self.disconnect_pipe() # Disconnect if clearing fails badly
 
     # --- High-Level Actions (To be adapted for IPC) ---
 
@@ -305,7 +450,7 @@ class GameInterface:
     def ping_dll(self) -> bool:
         """Sends a 'ping' command to the DLL and checks for a valid response."""
         print("[GameInterface] Sending ping...")
-        response = self.send_receive("ping", timeout_s=2.0)
+        response = self.send_receive("ping", timeout_ms=2000)
         if response:
             print(f"[GameInterface] Ping response: '{response}'")
             # Check if response indicates success (e.g., contains "pong" or "Received: ping")
@@ -326,7 +471,7 @@ class GameInterface:
                    or "CD_ERR:Not found" or similar on failure.
         """
         command = f"GET_CD:{spell_id}"
-        response = self.send_receive(command, timeout_s=1.0) # Faster timeout for frequent calls
+        response = self.send_receive(command, timeout_ms=1000) # Faster timeout for frequent calls
 
         if response and response.startswith("CD:"):
             try:
@@ -429,7 +574,7 @@ class GameInterface:
                   or "SPELLINFO_ERR:<message>"
         """
         command = f"GET_SPELL_INFO:{spell_id}"
-        response = self.send_receive(command, timeout_s=1.0) # Use a reasonable timeout
+        response = self.send_receive(command, timeout_ms=1000) # Use a reasonable timeout
 
         if response and response.startswith("SPELLINFO:"):
             try:
@@ -473,7 +618,7 @@ class GameInterface:
         DLL should respond with "TIME:<milliseconds>"
         """
         command = "GET_TIME_MS"
-        response = self.send_receive(command, timeout_s=0.5) # Use short timeout for time
+        response = self.send_receive(command, timeout_ms=500) # Use short timeout for time
         if response and response.startswith("TIME:"):
             try:
                 time_str = response.split(':')[1]
@@ -536,6 +681,30 @@ class GameInterface:
               time.sleep(0.5)
          else:
               print("Skipping Cast Spell test: Pipe not connected.")
+
+    def get_combo_points(self) -> Optional[int]:
+        """Retrieves the current combo points on the target via IPC."""
+        response = self.send_receive("GET_COMBO_POINTS")
+        if response and response.startswith("CP:"):
+            try:
+                # Extract the number after "CP:"
+                cp_str = response.split(':')[1]
+                combo_points = int(cp_str)
+                print(f"[GameInterface] Received Combo Points: {combo_points}")
+                # Handle negative values as errors/indicators from DLL
+                if combo_points == -1:
+                     print("[GameInterface] Warning: GetComboPoints Lua returned nil (No/Invalid Target?).")
+                     return 0 # Return 0 to GUI, but log the warning
+                elif combo_points < -1:
+                     print(f"[GameInterface] DLL reported error fetching combo points (Code: {combo_points})")
+                     return None # Indicate error to GUI
+                return combo_points
+            except (IndexError, ValueError) as e:
+                print(f"[GameInterface] Failed to parse combo points from response '{response}': {e}")
+                return None
+        else:
+            print(f"[GameInterface] Warning: Failed to get combo points or received invalid response: {response}")
+            return None
 
 
 # --- Example Usage ---
@@ -608,6 +777,17 @@ if __name__ == "__main__":
                     print("Failed to get game time (or no response/error from DLL).")
             else:
                  print("Skipping Get Time test: Pipe not connected.")
+
+            # --- Test Combo Points ---
+            print("\n--- Testing Get Combo Points ---")
+            if game.is_ready():
+                 cp = game.get_combo_points()
+                 if cp is not None:
+                      print(f"Current Combo Points on Target: {cp}")
+                 else:
+                      print("Failed to get combo points (or no response/error from DLL).")
+            else:
+                 print("Skipping Get Combo Points test: Pipe not connected.")
 
             game.disconnect_pipe()
         else:

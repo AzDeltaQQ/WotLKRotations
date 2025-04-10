@@ -1,4 +1,3 @@
-      
 import offsets # Import offsets globally for constants
 import time
 
@@ -136,12 +135,20 @@ class WowObject:
         self.z_pos = self.mem.read_float(self.base_address + offsets.OBJECT_POS_Z)
         self.rotation = self.mem.read_float(self.base_address + offsets.OBJECT_ROTATION)
 
+        # --- DEBUG LOG --- Check Position Read
+        # if self.type in [WowObject.TYPE_UNIT, WowObject.TYPE_PLAYER] and self.guid != self.local_player_guid: # Log only other units/players
+        #     print(f"[DEBUG WOW_OBJ {self.guid:X}] Pos: ({self.x_pos:.1f}, {self.y_pos:.1f}, {self.z_pos:.1f}) from base {self.base_address:X}")
+
         # --- Data primarily from Unit Fields (Check if pointer is valid!) ---
         if self.unit_fields_address:
             # --- Health and Level ---
             self.health = self.mem.read_uint(self.unit_fields_address + offsets.UNIT_FIELD_HEALTH)
             self.max_health = self.mem.read_uint(self.unit_fields_address + offsets.UNIT_FIELD_MAXHEALTH)
             self.level = self.mem.read_uint(self.unit_fields_address + offsets.UNIT_FIELD_LEVEL)
+
+            # --- DEBUG LOG --- Check Health Read
+            # if self.type in [WowObject.TYPE_UNIT, WowObject.TYPE_PLAYER] and self.guid != self.local_player_guid:
+            #     print(f"[DEBUG WOW_OBJ {self.guid:X}] Health: {self.health}/{self.max_health} from UnitFields {self.unit_fields_address:X}")
 
             # --- Flags ---
             self.unit_flags = self.mem.read_uint(self.unit_fields_address + offsets.UNIT_FIELD_FLAGS)
@@ -182,67 +189,49 @@ class WowObject:
                 if self.power_type == WowObject.POWER_MANA: current_power_addr = self.unit_fields_address + (0x19 * 4) # UNIT_FIELD_POWER1 ?
                 elif self.power_type == WowObject.POWER_RAGE: current_power_addr = self.unit_fields_address + (0x19 * 4) # UNIT_FIELD_POWER1 ?
                 elif self.power_type == WowObject.POWER_FOCUS: current_power_addr = self.unit_fields_address + (0x1A * 4) # UF + 0x68 << UNTESTED
-                elif self.power_type == WowObject.POWER_ENERGY: 
+                elif self.power_type == WowObject.POWER_ENERGY:
                     # User confirmation: Address UF + 0x70 (calculated MaxEnergy offset) shows current energy
-                    current_power_addr = self.unit_fields_address + 0x70 
+                    current_power_addr = self.unit_fields_address + 0x70
                     # current_power_addr = self.unit_fields_address + 0x64 # Tried this - Incorrect
                     # current_power_addr = self.unit_fields_address + 0x58 # UF + 0x58 << IDA Offset - FAILED
                 # elif self.power_type == WowObject.POWER_HAPPINESS: current_power_addr = self.unit_fields_address + (0x1C * 4) # UNIT_FIELD_POWER4 ?
                 # Skip Runes (complex)
                 elif self.power_type == WowObject.POWER_RUNIC_POWER: current_power_addr = self.unit_fields_address + (0x1E * 4) # UF + 0x78 << UNTESTED
                 else: current_power_addr = self.unit_fields_address + (0x19 * 4) # Default to POWER1
-                
+
                 read_value = 0 # Initialize before read
                 if current_power_addr:
-                    # Try reading as bytes and converting manually
+                    # Try reading as bytes and converting manually (as per original logic)
                     raw_bytes = self.mem.read_bytes(current_power_addr, 4)
                     if raw_bytes and len(raw_bytes) == 4:
                         try:
-                             read_value = int.from_bytes(raw_bytes, 'little')
-                             # <<< DEBUG PRINT >>>
-                             # if self.power_type == WowObject.POWER_ENERGY:
-                             #      # Using read_bytes method again
-                             #      print(f"    [DEBUG ENERGY READ - Offset 0x58 Bytes Method] Value from {current_power_addr:X}: {read_value} (Bytes: {raw_bytes.hex() if raw_bytes else 'None'})")
-                             # <<< END DEBUG PRINT >>>
+                            read_value = int.from_bytes(raw_bytes, 'little')
                         except ValueError:
-                             print(f"[WOW_OBJECT] Error converting bytes {raw_bytes.hex()} to int at {current_power_addr:X}", "ERROR")
-                             read_value = 0 # Ensure it's zero on conversion failure
+                            # print(f\"[WOW_OBJECT] Error converting bytes {raw_bytes.hex()} to int at {current_power_addr:X}\", \"ERROR\")
+                            read_value = 0 # Ensure it's zero on conversion failure
                     else:
-                         read_value = 0 # Ensure it's zero if read fails
+                        read_value = 0 # Ensure it's zero if read fails
                 else:
                     read_value = 0 # Ensure it's zero if address was not determined
 
                 self.energy = read_value # Assign whatever was read (or 0) to self.energy
 
                 # --- Max Power ---
-                # Current Energy reads from UF+0x70
-                # Max Mana read from UF+0x64
-                # Let's try reading Max Energy from UF+0x6C (original calculated offset)
+                # Using the original logic that was present
                 if self.power_type == WowObject.POWER_ENERGY:
                     max_power_addr = self.unit_fields_address + 0x6C
                 else: # Use the offset that worked for Max Mana
-                    max_power_base_offset = 0x64 
-                    max_power_addr = self.unit_fields_address + max_power_base_offset + (self.power_type * 4) 
-                    
-                # max_power_addr = self.unit_fields_address + offsets.UNIT_FIELD_MAXPOWERS + (self.power_type * 4) # Old way using offset from file
+                    max_power_base_offset = 0x64
+                    max_power_addr = self.unit_fields_address + max_power_base_offset + (self.power_type * 4)
+
                 self.max_energy = self.mem.read_uint(max_power_addr)
 
-                # --- Fallback for Max Energy (if read is 0 or nonsensical) ---
-                if self.power_type == WowObject.POWER_ENERGY and (self.max_energy <= 0 or self.max_energy > 150): # Check if read value is invalid
-                    self.max_energy = 100 # Default to 100 for Rogues/Ferals
-                    #print("DEBUG: Max Energy read failed or invalid, using fallback 100", "DEBUG")
+                # --- Fallback for Max Energy (Keep this) ---
+                if self.power_type == WowObject.POWER_ENERGY and (self.max_energy <= 0 or self.max_energy > 150):
+                    self.max_energy = 100
+                    #print(\"DEBUG: Max Energy read failed or invalid, using fallback 100\", \"DEBUG\")
 
-                # --- [DEBUG OBJECT UPDATE] ---
-                # if self.guid == self.local_player_guid: # Only print for local player
-                #     print(f"  [DEBUG OBJ UPDATE] GUID: {self.guid:X}")
-                #     print(f"    -> Assigned Health: {self.health}")
-                #     print(f"    -> Assigned MaxHealth: {self.max_health}")
-                #     print(f"    -> Assigned PowerType: {self.power_type}")
-                #     print(f"    -> Assigned Energy/Power (Current): {self.energy} (from addr {current_power_addr:X})")
-                #     print(f"    -> Assigned MaxEnergy/Power: {self.max_energy} (from addr {max_power_addr:X})")
-                # --- [END DEBUG OBJECT UPDATE] ---
-
-            else:
+            else: # Invalid or unhandled power type
                 self.energy = 0
                 self.max_energy = 0
 
@@ -309,6 +298,19 @@ class WowObject:
         }
         return type_map.get(self.power_type, "Power")
 
+    def get_type_str(self) -> str:
+        """Returns a human-readable string for the object's type."""
+        type_map = {
+            WowObject.TYPE_NONE: "None",
+            WowObject.TYPE_ITEM: "Item",
+            WowObject.TYPE_CONTAINER: "Container",
+            WowObject.TYPE_UNIT: "Unit",
+            WowObject.TYPE_PLAYER: "Player",
+            WowObject.TYPE_GAMEOBJECT: "GameObject",
+            WowObject.TYPE_DYNAMICOBJECT: "DynamicObj",
+            WowObject.TYPE_CORPSE: "Corpse"
+        }
+        return type_map.get(self.type, "Unknown")
 
     def __str__(self):
         name_str = self.get_name()

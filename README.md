@@ -47,6 +47,7 @@ This project uses a two-part architecture:
 *   **GUI Controls:** Test buttons for all major DLL interaction functions (GetTime, GetCooldown, IsInRange, CastSpell).
 *   **Logging:** GUI Log tab captures output from Python scripts. DLL uses `OutputDebugStringA` (viewable with DebugView).
 *   **Spellbook Scanner:** GUI utility to read and display known spell IDs from memory.
+*   **Combo Points Retrieval:** Retrieves current combo points via direct memory read.
 
 ## Dependencies
 

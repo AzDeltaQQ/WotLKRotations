@@ -393,6 +393,24 @@ class ObjectManager:
         # Force update of player and target objects
         self.update_local_player()
         self.update_target()
+
+        # Update other cached objects (skip player/target as they were just updated)
+        # Make a copy of keys to avoid modification during iteration issues
+        cached_guids = list(self.object_cache.keys())
+        for guid in cached_guids:
+            if guid == self.local_player_guid or guid == self.target_guid:
+                continue # Skip already updated player/target
+            obj = self.object_cache.get(guid)
+            if obj:
+                try:
+                    # Optional: Add throttling here too if needed for performance
+                    obj.update_dynamic_data()
+                except Exception as e:
+                    # Log error and potentially remove object from cache if update fails badly
+                    print(f"[ObjectManager] Error updating cached object {guid:X}: {e}")
+                    # Optionally remove from cache: del self.object_cache[guid]
+            # else: Object disappeared from cache during iteration (rare)
+
         self.last_refresh_time = now
 
 

@@ -32,7 +32,8 @@ enum RequestType {
     REQ_IS_IN_RANGE,      // New: Check spell range
     REQ_PING,             // New: Simple ping request
     REQ_GET_SPELL_INFO,   // New: Get spell details
-    REQ_CAST_SPELL        // New: Cast spell via internal C function
+    REQ_CAST_SPELL,       // New: Cast spell via internal C function
+    REQ_GET_COMBO_POINTS  // New: Get combo points on target
 };
 
 struct Request {
@@ -58,6 +59,8 @@ lua_Execute_t lua_Execute = (lua_Execute_t)WOW_LUA_EXECUTE;
 
 // --- Internal C Function for Casting ---
 #define WOW_CAST_SPELL_FUNC_ADDR 0x0080DA40 // CastLocalPlayerSpell address
+#define COMBO_POINTS_ADDR      0x00BD084D // Static address for player combo points byte
+
 // Deduced Signature: char __cdecl CastLocalPlayerSpell(int spellId, int unknownIntArg, __int64 targetGuid, char unknownCharArg);
 typedef char (__cdecl* CastLocalPlayerSpell_t)(int spellId, int unknownIntArg, uint64_t targetGuid, char unknownCharArg);
 CastLocalPlayerSpell_t CastLocalPlayerSpell = (CastLocalPlayerSpell_t)WOW_CAST_SPELL_FUNC_ADDR;
@@ -187,17 +190,23 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
         for (const auto& req : requestsToProcess) {
             std::string response_str = ""; // Prepare for potential response
 
-            // Check Lua state validity for commands that need it
-            bool need_lua = (req.type == REQ_EXEC_LUA || req.type == REQ_GET_TIME_MS || req.type == REQ_GET_CD || req.type == REQ_IS_IN_RANGE || req.type == REQ_GET_SPELL_INFO || req.type == REQ_CAST_SPELL);
+            // Check Lua state validity only if needed by *other* commands
+            bool need_lua = (req.type == REQ_EXEC_LUA || req.type == REQ_GET_TIME_MS ||
+                             req.type == REQ_GET_CD || req.type == REQ_IS_IN_RANGE ||
+                             req.type == REQ_GET_SPELL_INFO); // Removed REQ_CAST_SPELL and REQ_GET_COMBO_POINTS from Lua check
             bool need_cast_func = (req.type == REQ_CAST_SPELL);
 
             if (need_lua && !L) {
                 OutputDebugStringA("[WoWInjectDLL] hkEndScene: ERROR - Lua state is NULL, cannot process Lua request!\n");
-                response_str = "ERROR:Lua state null";
-                // Still need to push the response
+                // Determine appropriate error prefix based on request type
+                if (req.type == REQ_GET_CD) response_str = "CD_ERR:Lua state null";
+                else if (req.type == REQ_IS_IN_RANGE) response_str = "RANGE_ERR:Lua state null";
+                else if (req.type == REQ_GET_SPELL_INFO) response_str = "SPELLINFO_ERR:Lua state null";
+                // Add other error prefixes as needed
+                else response_str = "ERROR:Lua state null";
             } else if (need_cast_func && !CastLocalPlayerSpell) {
-                OutputDebugStringA("[WoWInjectDLL] hkEndScene: ERROR - CastLocalPlayerSpell function pointer is NULL!\n");
-                response_str = "ERROR:Cast func null";
+                 OutputDebugStringA("[WoWInjectDLL] hkEndScene: ERROR - CastLocalPlayerSpell function pointer is NULL!\n");
+                 response_str = "CAST_ERR:func null";
             } else {
                 // Process request if Lua state is valid (or not needed) or cast func is valid
                 switch (req.type) {
@@ -582,12 +591,41 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                         }
                         break;
 
+                    case REQ_GET_COMBO_POINTS:
+                        OutputDebugStringA("[WoWInjectDLL] hkEndScene: Processing REQ_GET_COMBO_POINTS (Memory Read).\n");
+                        try {
+                            // Directly read the byte from the static address
+                            unsigned char comboPoints = *(reinterpret_cast<unsigned char*>(COMBO_POINTS_ADDR));
+
+                            // Validate the value (should be 0-5)
+                            if (comboPoints > 5) { 
+                                sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Warning: Read combo point value %u, which is > 5. Clamping to 0.\n", comboPoints);
+                                OutputDebugStringA(log_buffer);
+                                comboPoints = 0; // Treat unexpected values as 0
+                            }
+
+                            // Format response: "CP:<value>"
+                            char cp_buf[64];
+                            sprintf_s(cp_buf, sizeof(cp_buf), "CP:%d", static_cast<int>(comboPoints));
+                            response_str = cp_buf;
+
+                        } catch (const std::exception& e) {
+                            std::string errorMsg = "[WoWInjectDLL] ERROR reading combo point memory (exception): ";
+                            errorMsg += e.what(); errorMsg += "\n";
+                            OutputDebugStringA(errorMsg.c_str());
+                            response_str = "CP:-98"; // Specific error code for memory read exception
+                        } catch (...) {
+                            OutputDebugStringA("[WoWInjectDLL] CRITICAL ERROR reading combo point memory: Access violation.\n");
+                            response_str = "CP:-99"; // Specific error code for memory access violation
+                        }
+                        break;
+
                     default:
                         OutputDebugStringA("[WoWInjectDLL] hkEndScene: Processing UNKNOWN request type!\n");
                         response_str = "ERROR:Unknown request";
                         break;
                 } // End switch
-            } // End else (Lua state check)
+            } // End if (response_str.empty())
 
             // If a response was generated, queue it for the IPC thread
             if (!response_str.empty()) {
@@ -861,19 +899,24 @@ DWORD WINAPI IPCThread(LPVOID lpParam) {
                 success = WriteFile(
                     g_hPipe,
                     responseToSend.c_str(),
-                    (DWORD)responseToSend.length(),
+                    responseToSend.length() + 1,
                     &bytesWritten,
                     NULL);
                 
-                if (!success || bytesWritten != responseToSend.length()) {
+                if (!success || bytesWritten != (responseToSend.length() + 1)) {
                     char err_buf[128];
-                    sprintf_s(err_buf, sizeof(err_buf), "[WoWInjectDLL] WriteFile failed. GLE=%d\n", GetLastError());
+                    sprintf_s(err_buf, sizeof(err_buf), "[WoWInjectDLL] WriteFile failed for direct response. GLE=%d\n", GetLastError());
                     OutputDebugStringA(err_buf);
                     // Handle write error, maybe client disconnected?
                     break; 
                 } else {
                      sprintf_s(log_buf, sizeof(log_buf), "[WoWInjectDLL] Sent response: [%s]...\n", responseToSend.substr(0, 100).c_str());
                      OutputDebugStringA(log_buf);
+                     // Flush the pipe buffer to ensure data is sent immediately
+                     if (!FlushFileBuffers(g_hPipe)) {
+                         sprintf_s(log_buf, sizeof(log_buf), "[WoWInjectDLL] FlushFileBuffers failed. GLE=%d\n", GetLastError());
+                         OutputDebugStringA(log_buf);
+                     }
                 }
             } 
             // Introduce a small delay if no response was sent to prevent busy-waiting?
@@ -916,6 +959,9 @@ void HandleIPCCommand(const std::string& command) {
     } else if (command == "GET_TIME_MS") {
         req.type = REQ_GET_TIME_MS;
         sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type GET_TIME_MS.\n");
+    } else if (command == "GET_COMBO_POINTS") { // Added GET_COMBO_POINTS parsing
+         req.type = REQ_GET_COMBO_POINTS;
+         sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type GET_COMBO_POINTS.\n");
     } else if (command.rfind("EXEC_LUA:", 0) == 0) {
         req.type = REQ_EXEC_LUA;
         req.data = command.substr(9);
