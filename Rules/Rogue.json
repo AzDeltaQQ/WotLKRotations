@@ -1,0 +1,9 @@
+[
+    {
+        "action": "Spell",
+        "detail": 1752,
+        "target": "target",
+        "condition": "Target Exists",
+        "cooldown": 0.0
+    }
+]

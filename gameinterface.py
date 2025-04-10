@@ -6,6 +6,8 @@ import offsets # Keep for LUA_STATE and function addrs if needed by DLL
 from memory import MemoryHandler # Keep if mem handler needed for other tasks
 # from object_manager import ObjectManager # No longer needed directly here
 from typing import Optional, List # Union, Any, List, Tuple - Removed unused
+import traceback # Make sure traceback is imported
+import logging # Added for logging
 
 # --- Pipe Constants ---
 PIPE_NAME = r'\\.\pipe\WowInjectPipe' # Raw string literal
@@ -81,12 +83,15 @@ class GameInterface:
 
         try:
             # Wait for the pipe to become available
+            print(f"[GameInterface] Waiting for pipe '{PIPE_NAME}'...") # ADDED DEBUG LOG
             if not WaitNamedPipeW(pipe_name_lpcwstr, timeout_ms):
                 error_code = GetLastError()
                 print(f"[GameInterface] Pipe '{PIPE_NAME}' not available after {timeout_ms}ms. Error: {error_code}")
                 return False
+            print(f"[GameInterface] Pipe '{PIPE_NAME}' is available.") # ADDED DEBUG LOG
 
             # Attempt to open the pipe
+            print(f"[GameInterface] Attempting CreateFileW for '{PIPE_NAME}'...") # ADDED DEBUG LOG
             self.pipe_handle = CreateFileW(
                 pipe_name_lpcwstr,
                 GENERIC_READ | GENERIC_WRITE,
@@ -99,7 +104,8 @@ class GameInterface:
 
             if self.pipe_handle == INVALID_HANDLE_VALUE:
                 error_code = GetLastError()
-                print(f"[GameInterface] Failed to connect to pipe '{PIPE_NAME}'. Error: {error_code}")
+                # ADDED MORE DETAIL to error message
+                print(f"[GameInterface] Failed to connect to pipe '{PIPE_NAME}'. CreateFileW Error: {error_code}") 
                 self.pipe_handle = None # Ensure handle is None on failure
                 return False
             else:
@@ -108,6 +114,7 @@ class GameInterface:
 
         except Exception as e:
             print(f"[GameInterface] Exception during pipe connection: {e}")
+            traceback.print_exc() # ADDED TRACEBACK
             self.pipe_handle = None
             return False
 
@@ -373,7 +380,6 @@ class GameInterface:
                     # Catch other potential programming errors
                     print(f"[GameInterface] Unexpected Python error during pipe receive loop: {e}")
                     # Log the traceback for debugging
-                    import traceback
                     traceback.print_exc()
                     self.disconnect_pipe()
                     return None
@@ -382,7 +388,6 @@ class GameInterface:
             # Catch errors during send or initial setup
             print(f"[GameInterface] Error sending/receiving command '{command}': {e}")
             # Log the traceback for debugging
-            import traceback
             traceback.print_exc()
             # Ensure pipe is disconnected if error occurred during send
             last_error = GetLastError() # Check if OS error code provides hint
@@ -719,6 +724,51 @@ class GameInterface:
         else:
             print(f"[GameInterface] Warning: Failed to get combo points or received invalid response: {response}")
             return None
+
+    def get_target_guid(self) -> Optional[int]:
+        """Sends GET_TARGET_GUID command and returns the target GUID as an int, or None."""
+        command = f"GET_TARGET_GUID"
+        try:
+            # Use send_receive which has timeout and pipe handling
+            response_lines = self.send_receive(command)
+            if response_lines and len(response_lines) > 0:
+                response_str = response_lines[0].strip()
+                logging.debug(f"Received raw response for GET_TARGET_GUID: {response_str}")
+
+                # Check for the expected prefix
+                prefix = "TARGET_GUID:"
+                if response_str.startswith(prefix):
+                    guid_hex_str = response_str[len(prefix):]
+                    if guid_hex_str == "0": # Handle case where DLL explicitly sends 0 for no target
+                        logging.debug("get_target_guid received explicit 0 (no target).")
+                        return 0
+                    elif guid_hex_str.startswith("ERR_"): # Handle specific error codes
+                        logging.error(f"DLL reported error fetching target GUID: {guid_hex_str}")
+                        return None # Indicate error
+                    else:
+                        try:
+                            # Convert hex string (e.g., "0xABCD") to int
+                            target_guid = int(guid_hex_str, 16) 
+                            return target_guid
+                        except (ValueError, TypeError) as e:
+                            logging.error(f"Could not convert target GUID hex '{guid_hex_str}' to int: {e}")
+                            return None # Indicate parsing error
+                else:
+                    logging.warning(f"Received unexpected response format for GET_TARGET_GUID: {response_str}")
+                    return None # Unexpected format
+            else:
+                # Handle cases where response is None (timeout) or empty list
+                logging.warning(f"Received no valid response for GET_TARGET_GUID (Timeout: {self.timeout_ms}ms?)")
+                return None # Indicate timeout or lack of response
+        except BrokenPipeError:
+            logging.error("BrokenPipeError during get_target_guid. Pipe closed.")
+            self.disconnect_pipe()
+            # Re-raise? No, GUI expects None on failure here.
+            return None
+        except Exception as e:
+            logging.exception(f"Unexpected Python error during get_target_guid: {e}")
+            # Attempt disconnect? Could hide original error.
+            return None # Indicate unexpected error
 
 
 # --- Example Usage ---

@@ -27,7 +27,8 @@ enum RequestType {
     REQ_PING,             // New: Simple ping request
     REQ_GET_SPELL_INFO,   // New: Get spell details
     REQ_CAST_SPELL,       // New: Cast spell via internal C function
-    REQ_GET_COMBO_POINTS  // New: Get combo points on target
+    REQ_GET_COMBO_POINTS, // New: Get combo points on target
+    REQ_GET_TARGET_GUID   // << ADDED: Get current target GUID
 };
 
 // Moved struct Request definition BEFORE its usage in g_requestQueue
@@ -689,6 +690,35 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                         }
                         break;
 
+                    case REQ_GET_TARGET_GUID:
+                        OutputDebugStringA("[WoWInjectDLL] hkEndScene: Processing REQ_GET_TARGET_GUID (Memory Read).\n");
+                        try {
+                            // Corrected logic for WoW 3.3.5a (12340)
+                            uintptr_t objectManagerPtr = *(uintptr_t*)0x00C79CE0;
+                            if (objectManagerPtr) {
+                                // Read TargetGUID from offset 0x74 relative to the ObjectManager base pointer
+                                uint64_t targetGUID = *(uint64_t*)(objectManagerPtr + 0x74); 
+                                char guid_buf[64];
+                                sprintf_s(guid_buf, sizeof(guid_buf), "TARGET_GUID:0x%llX", targetGUID);
+                                response_str = guid_buf;
+                                sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Target GUID Read (Offset 0x74): %s\n", guid_buf);
+                                OutputDebugStringA(log_buffer);
+                            } else {
+                                OutputDebugStringA("[WoWInjectDLL] ObjectManager base pointer (0x00C79CE0) is NULL. Cannot read TargetGUID.\n");
+                                response_str = "TARGET_GUID:0";
+                            }
+
+                        } catch (const std::exception& e) {
+                            std::string errorMsg = "[WoWInjectDLL] ERROR reading target GUID (exception): ";
+                            errorMsg += e.what(); errorMsg += "\n";
+                            OutputDebugStringA(errorMsg.c_str());
+                            response_str = "TARGET_GUID:ERR_EXC";
+                        } catch (...) {
+                            OutputDebugStringA("[WoWInjectDLL] CRITICAL ERROR reading target GUID: Access violation.\n");
+                            response_str = "TARGET_GUID:ERR_AV";
+                        }
+                        break;
+
                     default:
                         OutputDebugStringA("[WoWInjectDLL] hkEndScene: Processing UNKNOWN request type!\n");
                         response_str = "ERROR:Unknown request";
@@ -988,6 +1018,9 @@ void HandleIPCCommand(const std::string& command) {
     } else if (command == "GET_COMBO_POINTS") { 
          req.type = REQ_GET_COMBO_POINTS;
          sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type GET_COMBO_POINTS.\n");
+    } else if (command == "GET_TARGET_GUID") {
+         req.type = REQ_GET_TARGET_GUID;
+         sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type GET_TARGET_GUID.\n");
     } else if (command.rfind("EXEC_LUA:", 0) == 0) {
         req.type = REQ_EXEC_LUA;
         req.data = command.substr(9);
