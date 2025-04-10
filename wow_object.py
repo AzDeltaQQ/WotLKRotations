@@ -9,8 +9,6 @@ class WowObject:
 
     # Object Types (from common knowledge / likely values)
     TYPE_NONE = 0
-    TYPE_ITEM = 1
-    TYPE_CONTAINER = 2
     TYPE_UNIT = 3       # NPCs, Mobs
     TYPE_PLAYER = 4
     TYPE_GAMEOBJECT = 5 # Doors, Chests, etc.
@@ -305,8 +303,6 @@ class WowObject:
         """Returns a human-readable string for the object's type."""
         type_map = {
             WowObject.TYPE_NONE: "None",
-            WowObject.TYPE_ITEM: "Item",
-            WowObject.TYPE_CONTAINER: "Container",
             WowObject.TYPE_UNIT: "Unit",
             WowObject.TYPE_PLAYER: "Player",
             WowObject.TYPE_GAMEOBJECT: "GameObject",
@@ -318,7 +314,7 @@ class WowObject:
     def __str__(self):
         name_str = self.get_name()
         type_map = {
-            WowObject.TYPE_NONE: "None", WowObject.TYPE_ITEM: "Item", WowObject.TYPE_CONTAINER: "Container",
+            WowObject.TYPE_NONE: "None",
             WowObject.TYPE_UNIT: "Unit", WowObject.TYPE_PLAYER: "Player", WowObject.TYPE_GAMEOBJECT: "GameObject",
             WowObject.TYPE_DYNAMICOBJECT: "DynObj", WowObject.TYPE_CORPSE: "Corpse",
         }

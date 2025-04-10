@@ -32,9 +32,9 @@ This project uses a two-part architecture:
 ## Current Features
 
 *   **Process Attachment & Memory Reading:** Connects to `Wow.exe` and reads memory addresses.
-*   **Object Management:** Iterates the game's object list, identifies player/target, caches objects, reads known spell IDs.
-*   **Game State Monitoring:** GUI displays real-time information about the player, target, and nearby units (Health, Power, Position, Status).
-*   **Object List Filtering:** Added a filter button on the Monitor tab to select which types of objects (Players, Units, GameObjects, Items, etc.) are displayed in the nearby objects list.
+*   **Object Management:** Iterates the game's object list, identifies player/target, caches objects, reads known spell IDs. Specifically handles name reading for Players, Units, and GameObjects.
+*   **Game State Monitoring:** GUI displays real-time information about the player, target, and nearby units/objects (Health, Power, Position, Status) within 100 yards.
+*   **Object List Filtering:** GUI filter button allows selecting which object types (Players, Units, GameObjects, DynamicObjects, Corpses) are displayed. Items and Containers are now excluded.
 *   **Persistent Named Pipe IPC:** Robust, asynchronous communication channel between the Python GUI and the injected C++ DLL, allowing GUI reconnection without reinjecting the DLL. Handles out-of-order responses.
 *   **Lua Execution:** Send arbitrary Lua code strings from Python to be executed within the game's main thread via the DLL (`EXEC_LUA` command).
 *   **Game Time Retrieval:** Get the current in-game time (in milliseconds) via the DLL (`GET_TIME_MS` command).
@@ -113,6 +113,7 @@ This project uses a two-part architecture:
 *   The C++ DLL relies on Detours for hooking; ensure the build process correctly links it.
 *   The DLL now handles interaction with core Lua/C functions like `GetSpellCooldown`, `IsSpellInRange`, `GetTime`, `GetSpellInfo`, and `CastLocalPlayerSpell` providing more reliable data and actions than direct memory manipulation for these cases.
 *   Rotation logic is currently based on simple conditions; complex scenarios might need more Lua or DLL enhancements.
+*   Item and Container object types are no longer processed or displayed.
 
 ## Deprecated Features (Replaced by DLL/IPC)
 

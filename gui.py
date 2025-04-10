@@ -133,9 +133,7 @@ class WowMonitorApp:
         # --- Initialize Filter Variables (Default: Show Units & Players) ---
         self.filter_show_units_var = tk.BooleanVar(value=True)
         self.filter_show_players_var = tk.BooleanVar(value=True)
-        self.filter_show_gameobjects_var = tk.BooleanVar(value=False)
-        self.filter_show_items_var = tk.BooleanVar(value=False)
-        self.filter_show_containers_var = tk.BooleanVar(value=False)
+        self.filter_show_gameobjects_var = tk.BooleanVar(value=False) # Keep GOs off by default for now
         self.filter_show_dynamicobj_var = tk.BooleanVar(value=False)
         self.filter_show_corpses_var = tk.BooleanVar(value=False)
 
@@ -1464,12 +1462,13 @@ class WowMonitorApp:
                 WowObject.TYPE_PLAYER: self.filter_show_players_var.get(),
                 WowObject.TYPE_UNIT: self.filter_show_units_var.get(),
                 WowObject.TYPE_GAMEOBJECT: self.filter_show_gameobjects_var.get(),
-                WowObject.TYPE_ITEM: self.filter_show_items_var.get(),
-                WowObject.TYPE_CONTAINER: self.filter_show_containers_var.get(),
                 WowObject.TYPE_DYNAMICOBJECT: self.filter_show_dynamicobj_var.get(),
                 WowObject.TYPE_CORPSE: self.filter_show_corpses_var.get(),
                 # Add others if needed, default to False if type not in map
             }
+
+            # Define max distance for display
+            MAX_DISPLAY_DISTANCE = 100.0
 
             objects_in_om = self.om.get_objects()
             player = self.om.local_player # Get player from OM
@@ -1481,6 +1480,15 @@ class WowMonitorApp:
                 obj_type = getattr(obj, 'type', WowObject.TYPE_NONE)
                 if not obj or not hasattr(obj, 'guid') or not type_filter_map.get(obj_type, False):
                     continue # Skip if obj is invalid, has no guid, or type is filtered out
+
+                # --- Calculate Distance EARLY ---
+                dist_val = self.calculate_distance(obj)
+
+                # --- APPLY DISTANCE FILTER ---
+                # Skip if distance is invalid (-1) or greater than max display distance
+                # Also skip self (distance 0.0) unless specifically desired later
+                if dist_val < 0 or dist_val > MAX_DISPLAY_DISTANCE:
+                     continue
 
                 guid_str = str(obj.guid) # Keep original guid string for internal tree iid
                 processed_guids.add(guid_str)
@@ -1494,9 +1502,8 @@ class WowMonitorApp:
                 # --- HEALTH/POWER --- Use self.format_hp_energy (Handle potential AttributeError)
                 hp_str = self.format_hp_energy(getattr(obj, 'health', 0), getattr(obj, 'max_health', 0))
                 power_str = self.format_hp_energy(getattr(obj, 'energy', 0), getattr(obj, 'max_energy', 0), getattr(obj, 'power_type', -1))
-                # --- DISTANCE --- Use self.calculate_distance
-                dist_val = self.calculate_distance(obj)
-                dist_str = f"{dist_val:.1f}" if dist_val >= 0 else "N/A"
+                # --- DISTANCE --- Already calculated
+                dist_str = f"{dist_val:.1f}" # Format the valid distance
                 # --- STATUS --- Simplify for now - needs refinement
                 # Basic status based on flags or casting state
                 status_str = "Dead" if getattr(obj, 'is_dead', False) else (
@@ -1569,8 +1576,6 @@ class WowMonitorApp:
             WowObject.TYPE_PLAYER: (self.filter_show_players_var, "Players"),
             WowObject.TYPE_UNIT: (self.filter_show_units_var, "Units (NPCs/Mobs)"),
             WowObject.TYPE_GAMEOBJECT: (self.filter_show_gameobjects_var, "Game Objects"),
-            WowObject.TYPE_ITEM: (self.filter_show_items_var, "Items"),
-            WowObject.TYPE_CONTAINER: (self.filter_show_containers_var, "Containers"),
             WowObject.TYPE_DYNAMICOBJECT: (self.filter_show_dynamicobj_var, "Dynamic Objects"),
             WowObject.TYPE_CORPSE: (self.filter_show_corpses_var, "Corpses"),
         }
