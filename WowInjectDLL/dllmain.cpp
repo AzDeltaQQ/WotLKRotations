@@ -105,7 +105,7 @@ typedef int(__cdecl* lua_isstring_t)(lua_State* L, int idx);
 typedef int(__cdecl* lua_type_t)(lua_State* L, int idx);
 typedef int (__cdecl* lua_loadbuffer_t)(lua_State *L, const char *buff, size_t sz, const char *name);
 typedef void(__cdecl* lua_pushnil_t)(lua_State* L);
-typedef void(__cdecl* lua_getfield_t)(lua_State* L, int idx, const char* k); 
+typedef void(__cdecl* lua_getfield_t)(lua_State* L, int idx, const char* k);
 
 // WoW Internal C Functions / Game API
 typedef char (__cdecl* CastLocalPlayerSpell_t)(int spellId, int unknownIntArg, uint64_t targetGuid, char unknownCharArg);
@@ -223,7 +223,7 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
 
                     case REQ_EXEC_LUA:
                         // Ensure required function pointers are valid
-                        if (L && lua_loadbuffer && lua_pcall && lua_gettop && lua_tolstring && lua_settop && lua_type && lua_isstring && !req.data.empty()) { 
+                        if (L && lua_loadbuffer && lua_pcall && lua_gettop && lua_tolstring && lua_settop && lua_type && lua_isstring && !req.data.empty()) {
                             try {
                                 sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] hkEndScene: Executing Lua: [%.100s]...\n", req.data.c_str()); 
                                 OutputDebugStringA(log_buffer);
@@ -231,11 +231,9 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                                 int top_before_load = lua_gettop(L);
                                 int load_status = lua_loadbuffer(L, req.data.c_str(), req.data.length(), "WowInjectDLL_Exec");
 
-                                if (load_status == 0) { // Load successful, function is on stack
-                                    // Call pcall with 0 arguments, expecting LUA_MULTRET (-1) return values.
-                                    // The error handler index (0) means no error handler function.
-                                    int pcall_status = lua_pcall(L, 0, -1, 0); // LUA_MULTRET = -1
-                                    int results_count = lua_gettop(L) - top_before_load; // How many results are on the stack
+                                if (load_status == 0) { // Load successful
+                                    int pcall_status = lua_pcall(L, 0, -1, 0); // 0 args, LUA_MULTRET results, no error handler
+                                    int results_count = lua_gettop(L) - top_before_load;
 
                                     if (pcall_status == 0) { // pcall successful
                                         sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Lua pcall success. Results count: %d\n", results_count);
@@ -279,22 +277,27 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                                         response_str = ss_result.str(); // Set the final response string
 
                                     } else { // pcall failed
-                                        // Error message is on the top of the stack
+                                        // Reverted to only get error message from stack top
                                         const char* error_msg = "<Unknown pcall error>";
-                                        if (lua_isstring && lua_tolstring && lua_isstring(L, -1)) { // Check if error message is string
+                                        if (lua_isstring(L, -1)) { // Check stack top
                                             size_t len = 0;
                                             error_msg = lua_tolstring(L, -1, &len);
                                         }
-                                        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Lua pcall failed (%d): %s\n", pcall_status, error_msg ? error_msg : "(no message)");
+
+                                        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Lua pcall failed (%d): %s\n",
+                                                  pcall_status,
+                                                  error_msg ? error_msg : "(no message)");
                                         OutputDebugStringA(log_buffer);
-                                        response_str = "LUA_RESULT:ERROR:pcall failed:"; // Send error back
+
+                                        response_str = "LUA_RESULT:ERROR:pcall failed:";
                                         response_str += error_msg ? error_msg : "(no message)";
-                                        results_count = 1; // Error message counts as one result on stack for cleanup
+
+                                        // Error message is on stack top relative to top_before_load
                                     }
 
                                     // Clean up the stack (remove results or error message)
                                     if (lua_settop) {
-                                        lua_settop(L, top_before_load); // Restore stack top to before load
+                                        lua_settop(L, top_before_load); // Restore stack top
                                     }
 
                                 } else { // Load failed
@@ -584,7 +587,7 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                                         }
 
                                         char info_buf[1024];
-                                        sprintf_s(info_buf, sizeof(info_buf), "SPELLINFO:%s,%s,%.0f,%.1f,%.1f,%s,%.0f,%d",
+                                        sprintf_s(info_buf, sizeof(info_buf), "SPELL_INFO:%s|%s|%.0f|%.1f|%.1f|%s|%.0f|%d",
                                                   (name && strlen(name) > 0) ? name : "N/A",
                                                   (rank && strlen(rank) > 0) ? rank : "N/A",
                                                   castTime,

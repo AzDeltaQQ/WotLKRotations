@@ -590,10 +590,10 @@ class GameInterface:
         command = f"GET_SPELL_INFO:{spell_id}"
         response = self.send_receive(command, timeout_ms=1000) # Use a reasonable timeout
 
-        if response and response.startswith("SPELLINFO:"):
+        if response and response.startswith("SPELL_INFO:"):
             try:
-                # Split the part after "SPELLINFO:"
-                parts = response.split(':', 1)[1].split(',')
+                # Split the part after "SPELL_INFO:" using | delimiter
+                parts = response.split(':', 1)[1].split('|') # Changed from ',' to '|'
                 if len(parts) == 8: # Expect 8 parts now
                     name = parts[0] if parts[0] != "N/A" else None
                     rank = parts[1] if parts[1] != "N/A" else None
@@ -615,9 +615,9 @@ class GameInterface:
                         "powerType": power_type
                     }
                 else:
-                    print(f"[GameInterface] Invalid SPELLINFO response format (expected 8 parts, got {len(parts)}): {response}")
+                    print(f"[GameInterface] Invalid SPELL_INFO response format (expected 8 parts, got {len(parts)}): {response}")
             except (ValueError, IndexError, TypeError) as e:
-                print(f"[GameInterface] Error parsing SPELLINFO response '{response}': {e}")
+                print(f"[GameInterface] Error parsing SPELL_INFO response '{response}': {e}")
         elif response and response.startswith("SPELLINFO_ERR"):
             # print(f"[GameInterface] Spell info query for {spell_id} failed: {response}") # Debug
             pass # Silently fail if DLL reports error

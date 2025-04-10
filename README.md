@@ -110,6 +110,7 @@ This project uses a two-part architecture:
 
 *   Offsets in `offsets.py` and hardcoded in the DLL are critical and specific to WoW 3.3.5a (12340).
 *   The core logic file `WowInjectDLL/dllmain.cpp` has been recently refactored for better organization and readability, but the underlying functionality remains the same.
+*   Fixed an issue where spell names/ranks containing commas were not parsed correctly by changing the `SPELL_INFO` IPC delimiter to `|`.
 *   Error handling can be improved in both Python and C++ components.
 *   The C++ DLL relies on Detours for hooking; ensure the build process correctly links it.
 *   The DLL now handles interaction with core Lua/C functions like `GetSpellCooldown`, `IsSpellInRange`, `GetTime`, `GetSpellInfo`, and `CastLocalPlayerSpell` providing more reliable data and actions than direct memory manipulation for these cases.
