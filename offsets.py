@@ -95,7 +95,7 @@ NAME_MASK_OFFSET = 0x24 # Offset for the mask within the name structure
 NAME_BASE_OFFSET = 0x1C # Offset for the base pointer within the name structure
 # Corrected offset based on C# example structure reading
 # NAME_STRING_OFFSET = 0x20 # Offset for the actual name string within a name entry
-NAME_NODE_NEXT_OFFSET = 0xC # Offset to the 'next' pointer within a name node (Verify)
+NAME_NODE_NEXT_OFFSET = 0xC # Offset to the 'next' pointer within a name node (Changed from 0xC)
 NAME_NODE_NAME_OFFSET = 0x20 # Offset to the name string itself within a name node (Based on C# ReadString(current + 0x20))
 
 # --- Lua Interface ---

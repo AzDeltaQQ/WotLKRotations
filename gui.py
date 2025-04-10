@@ -11,6 +11,7 @@ import math
 import traceback
 from typing import Optional, List, Dict, Any
 import logging
+import sv_ttk # Import the theme library
 
 # Project Modules
 from memory import MemoryHandler, PROCESS_NAME
@@ -32,20 +33,36 @@ DEFAULT_FONT = ('TkDefaultFont', 9)
 BOLD_FONT = ('TkDefaultFont', 9, 'bold')
 CODE_FONT = ("Consolas", 10)
 
-LISTBOX_STYLE = {"bg": "#F0F0F0", "fg": "#333333", "font": DEFAULT_FONT, "selectbackground": "#0078D7", "selectforeground": "white", "borderwidth": 0, "highlightthickness": 0}
-LOG_TEXT_STYLE = {"bg": "#FFFFFF", "fg": "#000000", "font": DEFAULT_FONT, "wrap": tk.WORD}
+# Updated styles for dark theme
+LISTBOX_STYLE = {
+    "bg": "#2E2E2E",           # Dark background
+    "fg": "#E0E0E0",           # Light text
+    "font": DEFAULT_FONT,
+    "selectbackground": "#005A9E", # Darker blue highlight (adjust as needed)
+    "selectforeground": "#FFFFFF", # White selected text
+    "borderwidth": 0,
+    "highlightthickness": 1,      # Add a subtle border
+    "highlightcolor": "#555555"   # Border color
+}
+LOG_TEXT_STYLE = {
+    "bg": "#1E1E1E",           # Very dark background for log
+    "fg": "#D4D4D4",           # Default light grey text
+    "font": DEFAULT_FONT,
+    "wrap": tk.WORD,
+    "insertbackground": "#FFFFFF" # White cursor
+}
 # Create a specific style for Lua output based on LOG_TEXT_STYLE but with CODE_FONT
 LUA_OUTPUT_STYLE = LOG_TEXT_STYLE.copy()
 LUA_OUTPUT_STYLE["font"] = CODE_FONT
 
 LOG_TAGS = {
-    "DEBUG": {"foreground": "#888888"},
-    "INFO": {"foreground": "#000000"},
-    "WARN": {"foreground": "#FFA500"}, # Orange
-    "ERROR": {"foreground": "#FF0000", "font": BOLD_FONT}, # Red, Bold
-    "ACTION": {"foreground": "#0000FF"}, # Blue
-    "RESULT": {"foreground": "#008000"}, # Green
-    "ROTATION": {"foreground": "#800080"}  # Purple
+    "DEBUG": {"foreground": "#888888"},      # Keep grey for debug
+    "INFO": {"foreground": "#D4D4D4"},       # Use default light grey for info
+    "WARN": {"foreground": "#FFA500"},      # Keep Orange
+    "ERROR": {"foreground": "#FF6B6B", "font": BOLD_FONT}, # Lighter Red, Bold
+    "ACTION": {"foreground": "#569CD6"},      # Lighter Blue
+    "RESULT": {"foreground": "#60C060"},      # Lighter Green
+    "ROTATION": {"foreground": "#C586C0"}     # Lighter Purple
 }
 
 
@@ -74,6 +91,9 @@ class WowMonitorApp:
         geometry = self.config.get('GUI', 'geometry', fallback=default_geometry)
         self.root.geometry(geometry)
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+        # Apply the Sun Valley theme (set theme *before* creating widgets)
+        sv_ttk.set_theme("dark")
 
         # --- Notebook (Tabs) ---
         self.notebook = ttk.Notebook(self.root)
@@ -109,6 +129,15 @@ class WowMonitorApp:
         self.target_pos_var = tk.StringVar(value="N/A")
         self.target_status_var = tk.StringVar(value="N/A")
         self.target_dist_var = tk.StringVar(value="N/A")
+
+        # --- Initialize Filter Variables (Default: Show Units & Players) ---
+        self.filter_show_units_var = tk.BooleanVar(value=True)
+        self.filter_show_players_var = tk.BooleanVar(value=True)
+        self.filter_show_gameobjects_var = tk.BooleanVar(value=False)
+        self.filter_show_items_var = tk.BooleanVar(value=False)
+        self.filter_show_containers_var = tk.BooleanVar(value=False)
+        self.filter_show_dynamicobj_var = tk.BooleanVar(value=False)
+        self.filter_show_corpses_var = tk.BooleanVar(value=False)
 
         # --- Initialize Editor Data ---
         self.rule_conditions = ["None", "Target Exists", "Target Attackable", "Is Casting", "Target Is Casting",
@@ -177,17 +206,17 @@ class WowMonitorApp:
         try:
             path = self.config.get('Settings', 'WowPath', fallback=None)
             if path and os.path.isdir(path):
-                    self.log_message(f"Read WowPath from {self.config_file}: {path}", "INFO")
-                    return path
+                self.log_message(f"Read WowPath from {self.config_file}: {path}", "INFO")
+                return path
             elif path:
-                    self.log_message(f"Warning: WowPath '{path}' in {self.config_file} is not a valid directory.", "WARN")
+                self.log_message(f"Warning: WowPath '{path}' in {self.config_file} is not a valid directory.", "WARN")
             default_path = "C:/Users/Jacob/Desktop/World of Warcraft 3.3.5a"
             self.log_message(f"Using default WoW path: {default_path}", "INFO")
             if os.path.isdir(default_path):
-                 return default_path
+                return default_path
             else:
-                 self.log_message(f"Error: Default WoW path '{default_path}' is not valid.", "ERROR")
-                 return None
+                self.log_message(f"Error: Default WoW path '{default_path}' is not valid.", "ERROR")
+                return None
         except Exception as e:
             self.log_message(f"Error getting WoW path: {e}. Using fallback.", "ERROR")
             fallback_path = "C:/Users/Jacob/Desktop/World of Warcraft 3.3.5a"
@@ -204,7 +233,7 @@ class WowMonitorApp:
 
     def _load_config(self):
         try:
-            self.loaded_script_path = self.config.get('Rotation', 'last_script', fallback=None)
+                 self.loaded_script_path = self.config.get('Rotation', 'last_script', fallback=None)
         except Exception as e:
             self.log_message(f"Error loading config settings (beyond geometry): {e}", "ERROR")
 
@@ -295,9 +324,20 @@ class WowMonitorApp:
         ttk.Label(info_frame, text="Dist:").grid(row=13, column=0, sticky=tk.W, padx=5, pady=1)
         ttk.Label(info_frame, textvariable=self.target_dist_var).grid(row=13, column=1, sticky=tk.W, padx=5, pady=1)
 
-        list_frame = ttk.LabelFrame(tab, text="Nearby Units/Players", padding=(10, 5))
-        list_frame.pack(pady=5, padx=5, fill=tk.BOTH, expand=True)
-        self.tree = ttk.Treeview(list_frame, columns=('GUID', 'Type', 'Name', 'HP', 'Power', 'Dist', 'Status'), show='headings', height=10) # Removed style='Treeview'
+        # --- Nearby Units Frame with Filter Button ---
+        list_outer_frame = ttk.Frame(tab)
+        list_outer_frame.pack(pady=5, padx=5, fill=tk.BOTH, expand=True)
+        # list_outer_frame.columnconfigure(0, weight=1)
+
+        list_header_frame = ttk.Frame(list_outer_frame)
+        list_header_frame.pack(fill=tk.X)
+        ttk.Label(list_header_frame, text="Nearby Objects:", font=BOLD_FONT).pack(side=tk.LEFT, padx=(10, 5))
+        ttk.Button(list_header_frame, text="Filter...", command=self.open_monitor_filter_dialog).pack(side=tk.LEFT, padx=5)
+
+        # --- Treeview Frame ---
+        list_frame = ttk.LabelFrame(list_outer_frame, text="", padding=(10, 5)) # LabelFrame for border, text removed
+        list_frame.pack(pady=(5,0), padx=0, fill=tk.BOTH, expand=True) # No internal padding needed if tree fills it
+        self.tree = ttk.Treeview(list_frame, columns=('GUID', 'Type', 'Name', 'HP', 'Power', 'Dist', 'Status'), show='headings', height=10)
         self.tree.heading('GUID', text='GUID')
         self.tree.heading('Type', text='Type')
         self.tree.heading('Name', text='Name')
@@ -597,7 +637,7 @@ class WowMonitorApp:
         if selected_script and not selected_script.startswith("No ") and not selected_script.startswith("Error "):
             script_path = os.path.join(scripts_dir, selected_script)
             if os.path.exists(script_path):
-                if self.combat_rotation.load_rotation_script(script_path):
+                if self.combat_rotation and self.combat_rotation.load_rotation_script(script_path): # Check combat_rotation exists
                     self.loaded_script_path = script_path
                     self.rotation_rules = [] # Clear editor rules
                     self.update_rule_listbox()
@@ -605,7 +645,7 @@ class WowMonitorApp:
                     messagebox.showinfo("Script Loaded", f"Loaded script:\n{selected_script}")
                     # if hasattr(self, 'rules_info_label'): self.rules_info_label.config(text="Script loaded, rules cleared.") # Requires rules_info_label
                 else:
-                    messagebox.showerror("Load Error", f"Failed to load script content:\n{script_path}")
+                    messagebox.showerror("Load Error", f"Failed to load script content or Combat Rotation not ready:\n{script_path}")
                     self.loaded_script_path = None
             else:
                  messagebox.showerror("Load Error", f"Script file not found:\n{script_path}")
@@ -632,7 +672,7 @@ class WowMonitorApp:
         if not self.game or not self.game.is_ready():
              self.log_message("Cannot start rotation: Game Interface (IPC) not ready.", "ERROR")
              messagebox.showerror("Error", "Cannot start rotation: Pipe to DLL not connected.")
-             return
+             return # Correct indentation
 
         using_rules = bool(self.combat_rotation.rotation_rules)
         using_script = bool(self.combat_rotation.lua_script_content)
@@ -742,7 +782,8 @@ class WowMonitorApp:
                 self.log_message(f"Added new rule: {rule}", "DEBUG")
 
             # Update combat engine and listbox
-            self.combat_rotation.load_rotation_rules(self.rotation_rules)
+            if self.combat_rotation: # Check if engine exists before loading
+                self.combat_rotation.load_rotation_rules(self.rotation_rules)
             self.update_rule_listbox()
             self.clear_rule_input_fields() # Clear inputs after successful add/update
 
@@ -772,7 +813,8 @@ class WowMonitorApp:
         try:
             removed_rule = self.rotation_rules.pop(index_to_remove)
             self.log_message(f"Removed rule: {removed_rule}", "DEBUG")
-            self.combat_rotation.load_rotation_rules(self.rotation_rules) # Update engine
+            if self.combat_rotation: # Update engine
+                self.combat_rotation.load_rotation_rules(self.rotation_rules)
             self.update_rule_listbox()
             self.clear_rule_input_fields() # Clear inputs after removal
             self._update_button_states()
@@ -911,7 +953,7 @@ class WowMonitorApp:
         spell_ids = self.om.read_known_spell_ids()
         if not spell_ids:
             messagebox.showinfo("Spellbook Scan", "No spell IDs found or unable to read spellbook.")
-            return
+            return # Correct Indentation
 
         scan_window = tk.Toplevel(self.root)
         scan_window.title("Known Spells")
@@ -980,7 +1022,7 @@ class WowMonitorApp:
     def lookup_spell_info(self):
         if not self.game or not self.game.is_ready():
             messagebox.showerror("Error", "Game Interface not ready. Cannot get spell info.")
-            return
+            return # Correct Indentation
 
         spell_id_str = simpledialog.askstring("Lookup Spell", "Enter Spell ID:", parent=self.root)
         if not spell_id_str: return
@@ -1236,24 +1278,24 @@ class WowMonitorApp:
 
             # 1. Memory Handler
             if not self.mem or not self.mem.is_attached():
-                 self.mem = MemoryHandler()
-                 if not self.mem.is_attached():
-                      self.log_message(f"Failed to attach to WoW process ({PROCESS_NAME}).", "ERROR")
-                      return False
-                 self.log_message(f"Attached to WoW process ({PROCESS_NAME}).", "INFO")
+                self.mem = MemoryHandler()
+                if not self.mem.is_attached():
+                    self.log_message(f"Failed to attach to WoW process ({PROCESS_NAME}).", "ERROR")
+                    return False
+                self.log_message(f"Attached to WoW process ({PROCESS_NAME}).", "INFO")
 
             # 2. Object Manager
             if not self.om or not self.om.is_ready():
-                 self.om = ObjectManager(self.mem)
-                 if not self.om.is_ready():
-                      self.log_message("Failed to initialize Object Manager (Check ClientConnection/Offsets?).", "ERROR")
-                      return False
-                 self.log_message("Object Manager initialized.", "INFO")
+                self.om = ObjectManager(self.mem)
+                if not self.om.is_ready():
+                    self.log_message("Failed to initialize Object Manager (Check ClientConnection/Offsets?).", "ERROR")
+                    return False
+                self.log_message("Object Manager initialized.", "INFO")
 
             # 3. Game Interface
             if not self.game:
-                 self.game = GameInterface(self.mem)
-                 self.log_message("Game Interface (IPC) created.", "INFO")
+                self.game = GameInterface(self.mem)
+                self.log_message("Game Interface (IPC) created.", "INFO")
 
             # 4. IPC Pipe Connection
             if not self.game.is_ready():
@@ -1311,7 +1353,7 @@ class WowMonitorApp:
     def load_rules_from_editor(self):
         """Loads the rules currently defined in the editor into the combat engine."""
         if self.rotation_running:
-            messagebox.showerror("Error", "Stop the rotation before loading new rules.")
+            messagebox.showerror("Error", "Stop the rotation before editing rules.")
             return
         if not self.combat_rotation:
              messagebox.showerror("Error", "Combat Rotation engine not initialized.")
@@ -1413,38 +1455,58 @@ class WowMonitorApp:
     def update_monitor_treeview(self):
         try:
             # Ensure OM and tree exist before proceeding
-            if not self.om or not self.om.is_ready() or not hasattr(self, 'tree'):
-                # logging.debug("OM or Treeview not ready for update.") # Optional debug log
-                return
+            if not self.om or not self.om.is_ready() or not hasattr(self, 'tree') or not self.tree.winfo_exists():
+                 # logging.debug("OM or Treeview not ready for update or destroyed.")
+                 return
 
-            objects_to_display = self.om.get_objects()
+            # Build a map of which object types to display based on filter vars
+            type_filter_map = {
+                WowObject.TYPE_PLAYER: self.filter_show_players_var.get(),
+                WowObject.TYPE_UNIT: self.filter_show_units_var.get(),
+                WowObject.TYPE_GAMEOBJECT: self.filter_show_gameobjects_var.get(),
+                WowObject.TYPE_ITEM: self.filter_show_items_var.get(),
+                WowObject.TYPE_CONTAINER: self.filter_show_containers_var.get(),
+                WowObject.TYPE_DYNAMICOBJECT: self.filter_show_dynamicobj_var.get(),
+                WowObject.TYPE_CORPSE: self.filter_show_corpses_var.get(),
+                # Add others if needed, default to False if type not in map
+            }
+
+            objects_in_om = self.om.get_objects()
             player = self.om.local_player # Get player from OM
             current_guids_in_tree = set(self.tree.get_children())
             processed_guids = set()
 
-            for obj in objects_to_display:
-                # <<<--- START FILTER --->
-                # Skip if not a Unit or Player, or invalid object
-                if not obj or not hasattr(obj, 'guid') or obj.type not in [WowObject.TYPE_UNIT, WowObject.TYPE_PLAYER]:
-                    continue
-                # <<<--- END FILTER --->
+            for obj in objects_in_om:
+                # Check if object type is valid and should be displayed based on filter
+                obj_type = getattr(obj, 'type', WowObject.TYPE_NONE)
+                if not obj or not hasattr(obj, 'guid') or not type_filter_map.get(obj_type, False):
+                    continue # Skip if obj is invalid, has no guid, or type is filtered out
+
                 guid_str = str(obj.guid) # Keep original guid string for internal tree iid
                 processed_guids.add(guid_str)
 
                 # Format GUID as hex for display
                 guid_hex = f"0x{obj.guid:X}"
                 # --- TYPE --- Call get_type_str directly
-                obj_type_str = obj.get_type_str() if hasattr(obj, 'get_type_str') else "?" # Call the method
-                # --- NAME ---
-                name = obj.get_name() if hasattr(obj, 'get_name') and obj.get_name() else "<Unknown>"
-                # --- HEALTH/POWER --- Use self.format_hp_energy
+                obj_type_str = obj.get_type_str() if hasattr(obj, 'get_type_str') else f"Type{obj_type}"
+                # --- NAME --- Use the object's get_name method (now simple)
+                name = obj.get_name()
+                # --- HEALTH/POWER --- Use self.format_hp_energy (Handle potential AttributeError)
                 hp_str = self.format_hp_energy(getattr(obj, 'health', 0), getattr(obj, 'max_health', 0))
                 power_str = self.format_hp_energy(getattr(obj, 'energy', 0), getattr(obj, 'max_energy', 0), getattr(obj, 'power_type', -1))
                 # --- DISTANCE --- Use self.calculate_distance
                 dist_val = self.calculate_distance(obj)
                 dist_str = f"{dist_val:.1f}" if dist_val >= 0 else "N/A"
-                # --- STATUS ---
-                status_str = obj.get_status_flags_str() if hasattr(obj, 'get_status_flags_str') else "Idle"
+                # --- STATUS --- Simplify for now - needs refinement
+                # Basic status based on flags or casting state
+                status_str = "Dead" if getattr(obj, 'is_dead', False) else (
+                    "Casting" if getattr(obj, 'is_casting', False) else (
+                        "Channeling" if getattr(obj, 'is_channeling', False) else "Idle"
+                    )
+                )
+                # Consider adding combat flag if available and reliable
+                # if hasattr(obj, 'unit_flags') and (obj.unit_flags & WowObject.UNIT_FLAG_IN_COMBAT):
+                #    status_str += " (Combat?)" # Mark as potentially unreliable
 
                 values = (
                     guid_hex,
@@ -1466,27 +1528,71 @@ class WowMonitorApp:
                         # Insert new item using the original guid_str as iid
                         self.tree.insert('', tk.END, iid=guid_str, values=values, tags=(obj_type_str.lower(),))
                 except tk.TclError as e:
+                    # This can happen if the tree is destroyed during update
                     logging.warning(f"TclError updating/inserting item {guid_str} in tree: {e}")
+                    break # Exit loop if tree is bad
 
-
-            # Remove items from tree that are no longer in the object manager
+            # Remove items from tree that are no longer in the object manager OR filtered out
             guids_to_remove = current_guids_in_tree - processed_guids
             for guid_to_remove in guids_to_remove:
                 try:
-                    if self.tree.exists(guid_to_remove): # Check existence before deleting
+                    if self.tree.exists(guid_to_remove):
                          self.tree.delete(guid_to_remove)
                 except tk.TclError as e:
-                    # Handle potential errors if item already deleted or invalid
+                    # Handle potential errors if item already deleted or tree invalid
                     logging.warning(f"TclError deleting item {guid_to_remove} from tree: {e}")
+                    break # Exit loop if tree is bad
 
         except Exception as e:
             logging.exception(f"Error updating monitor treeview: {e}")
-            # Consider adding more specific error handling or user feedback
-            # self.log_message(f"Error updating monitor: {e}", "ERROR")
 
     def _sort_treeview_column(self, col, reverse):
         # Implement sorting logic for the treeview column
         pass
+
+    def open_monitor_filter_dialog(self):
+        """Opens a dialog window to configure object type filters for the monitor list."""
+        filter_window = tk.Toplevel(self.root)
+        filter_window.title("Monitor Filters")
+        filter_window.geometry("250x280") # Adjusted size
+        filter_window.transient(self.root)
+        filter_window.grab_set() # Make it modal
+        filter_window.resizable(False, False)
+
+        main_frame = ttk.Frame(filter_window, padding=15)
+        main_frame.pack(expand=True, fill=tk.BOTH)
+
+        ttk.Label(main_frame, text="Show Object Types:", font=BOLD_FONT).pack(pady=(0, 10))
+
+        # Map object type enum to filter variable and label text
+        filter_map = {
+            WowObject.TYPE_PLAYER: (self.filter_show_players_var, "Players"),
+            WowObject.TYPE_UNIT: (self.filter_show_units_var, "Units (NPCs/Mobs)"),
+            WowObject.TYPE_GAMEOBJECT: (self.filter_show_gameobjects_var, "Game Objects"),
+            WowObject.TYPE_ITEM: (self.filter_show_items_var, "Items"),
+            WowObject.TYPE_CONTAINER: (self.filter_show_containers_var, "Containers"),
+            WowObject.TYPE_DYNAMICOBJECT: (self.filter_show_dynamicobj_var, "Dynamic Objects"),
+            WowObject.TYPE_CORPSE: (self.filter_show_corpses_var, "Corpses"),
+        }
+
+        for obj_type, (var, label) in filter_map.items():
+            ttk.Checkbutton(main_frame, text=label, variable=var).pack(anchor=tk.W, padx=10)
+
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(side=tk.BOTTOM, pady=(20, 0), fill=tk.X)
+
+        def apply_and_close():
+            self.update_monitor_treeview() # Update tree based on new filter settings
+            filter_window.destroy()
+
+        ok_button = ttk.Button(button_frame, text="OK", command=apply_and_close)
+        ok_button.pack(side=tk.RIGHT, padx=5)
+        # No need for cancel if closing doesn't change anything
+        # cancel_button = ttk.Button(button_frame, text="Cancel", command=filter_window.destroy)
+        # cancel_button.pack(side=tk.RIGHT)
+
+        filter_window.wait_window() # Wait for the window to be closed
+
 
 # --- Log Redirector Class ---
 class LogRedirector:
@@ -1532,7 +1638,7 @@ class LogRedirector:
         try:
             if not self.text_widget or not self.text_widget.winfo_exists():
                 print("Log Widget destroyed:", message.strip(), file=self.stderr_orig)
-                return
+                return # Correct Indentation
 
             self.text_widget.config(state=tk.NORMAL)
             timestamp = time.strftime("%H:%M:%S")

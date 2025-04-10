@@ -1,5 +1,8 @@
 import offsets # Import offsets globally for constants
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 class WowObject:
     """Represents a generic World of Warcraft object (Player, NPC, Item, etc.)."""

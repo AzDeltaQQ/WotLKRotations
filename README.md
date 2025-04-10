@@ -34,6 +34,7 @@ This project uses a two-part architecture:
 *   **Process Attachment & Memory Reading:** Connects to `Wow.exe` and reads memory addresses.
 *   **Object Management:** Iterates the game's object list, identifies player/target, caches objects, reads known spell IDs.
 *   **Game State Monitoring:** GUI displays real-time information about the player, target, and nearby units (Health, Power, Position, Status).
+*   **Object List Filtering:** Added a filter button on the Monitor tab to select which types of objects (Players, Units, GameObjects, Items, etc.) are displayed in the nearby objects list.
 *   **Persistent Named Pipe IPC:** Robust, asynchronous communication channel between the Python GUI and the injected C++ DLL, allowing GUI reconnection without reinjecting the DLL. Handles out-of-order responses.
 *   **Lua Execution:** Send arbitrary Lua code strings from Python to be executed within the game's main thread via the DLL (`EXEC_LUA` command).
 *   **Game Time Retrieval:** Get the current in-game time (in milliseconds) via the DLL (`GET_TIME_MS` command).
@@ -131,4 +132,15 @@ This project uses a two-part architecture:
 1.  Ensure Python 3 is installed.
 2.  Install required library: `pip install pymem`
 3.  Ensure WoW 3.3.5a (client build 12340) is running.
-4.  Run the GUI: `python gui.py` 
+4.  Run the GUI: `python gui.py`
+
+## Setup
+
+1.  **Requirements:**
+    *   Python 3.x
+    *   `pywin32` (`pip install pywin32`)
+    *   `psutil` (`pip install psutil`)
+    *   `sv-ttk` (`pip install sv-ttk`) # For the GUI theme
+    *   A C++ compiler supporting C++17 (e.g., Visual Studio with CMake integration).
+    *   CMake.
+    *   Detours library (submoduled or placed in a known location for CMake). 
