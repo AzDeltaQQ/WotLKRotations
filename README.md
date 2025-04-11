@@ -9,12 +9,16 @@ A Python and C++ experimental framework for interacting with World of Warcraft (
 This project uses a two-part architecture:
 
 1.  **Python Frontend & Core Logic:**
-    *   **GUI (`gui.py`):** A `tkinter`-based graphical user interface (using the `sv-ttk` theme) to display game information (player/target status, nearby objects, logs), control the rotation engine, edit rotation rules, and execute Lua commands.
+    *   **GUI (`gui.py` & `gui/` directory):**
+        *   The main application logic resides in `gui.py` (`WowMonitorApp` class). It handles window creation, core component initialization (memory, objects, game interface, rotation engine), the main update loop, status bar, configuration, and shared state/variables.
+        *   The UI for each tab (Monitor, Rotation Control, Rotation Editor, Lua Runner, Log) is managed by separate handler classes within the `gui/` subdirectory (e.g., `gui/monitor_tab.py` contains `MonitorTab`).
+        *   These tab handlers create their specific widgets and handle tab-local logic, interacting with the main `WowMonitorApp` instance for shared data and core functionalities.
+        *   Uses `tkinter` with the `sv-ttk` theme.
     *   **Memory Handler (`memory.py`):** Uses `pymem` to attach to the WoW process and read/write memory.
     *   **Object Manager (`object_manager.py`):** Reads the WoW object list, manages a cache of `WowObject` instances, and identifies the local player and target. Reads dynamic object data like health, power, position, status flags, and known spell IDs directly from memory.
     *   **WoW Object (`wow_object.py`):** Represents game objects (players, units) and reads their properties from memory using offsets defined in `offsets.py`.
     *   **Game Interface (`gameinterface.py`):** Manages communication with the injected C++ DLL via **Named Pipes**. Sends commands (like `EXEC_LUA`, `GET_TIME_MS`, `GET_CD`, `IS_IN_RANGE`, `GET_SPELL_INFO`, `CAST_SPELL`, `GET_TARGET_GUID`, `GET_COMBO_POINTS`) and receives responses. Handles asynchronous communication.
-    *   **Combat Rotation (`combat_rotation.py`):** Engine capable of executing rotations based on prioritized rules defined in the GUI editor. Includes a `ConditionChecker` for evaluating rule conditions (currently basic checks, some placeholders require Lua).
+    *   **Combat Rotation (`combat_rotation.py`):** Engine capable of executing rotations based on prioritized rules defined in the GUI editor. Includes a `ConditionChecker` for evaluating rule conditions.
     *   **Target Selector (`targetselector.py`):** Basic framework for target selection logic.
     *   **Offsets (`offsets.py`):** Contains memory addresses and structure offsets specific to WoW 3.3.5a (12340).
     *   **Rules (`rules.py`):** Defines the structure for rotation rules used by the editor. Rules are saved/loaded as `.json` files in the `Rules/` directory.
@@ -45,14 +49,14 @@ This project uses a two-part architecture:
     *   GUI editor (`Rotation Editor` tab) to define prioritized rules.
     *   Available Actions: `Spell`, `Macro` (not implemented), `Lua`.
     *   Available Targets: `target`, `player`, `focus`, `pet`, `mouseover`.
-    *   Available Conditions: 
+    *   Available Conditions:
         *   Simple: `None`, `Target Exists`, `Target Attackable` (basic), `Player Is Casting`, `Target Is Casting`, `Player Is Moving`, `Player Is Stealthed`.
-        *   Health/Resource: `Target HP % < X`, `Player HP % < X`, `Player Rage >= X`, `Player Energy >= X`, `Player Mana % < X`, `Player Combo Points >= X` (Requires `Condition Value (X)` input in editor).
-        *   Distance: `Target Distance < X`.
-        *   Placeholders: `Is Spell Ready`, `Target Has Aura`, `Player Has Aura`.
+        *   Health/Resource: `Target HP % < X`, `Target HP % > X`, `Target HP % Between X-Y`, `Player HP % < X`, `Player HP % > X`, `Player Rage >= X`, `Player Energy >= X`, `Player Mana % < X`, `Player Mana % > X`, `Player Combo Points >= X` (Requires `Condition Value (X/Y)` input).
+        *   Distance: `Target Distance < X`, `Target Distance > X`.
+        *   Spell/Aura: `Is Spell Ready`, `Target Has Aura`, `Target Missing Aura`, `Player Has Aura`, `Player Missing Aura` (Requires `Name/ID` input).
     *   Condition checks happen *before* cooldown checks for efficiency.
     *   Rules targeting "target" automatically check if a target exists before proceeding.
-    *   GUI supports inputting the `X` value for relevant conditions.
+    *   GUI supports inputting the `X/Y` or `Name/ID` values for relevant conditions.
     *   Save/Load rules to/from `.json` files in the `Rules/` directory.
     *   Activate rules from editor or loaded files via the `Rotation Control / Test` tab.
 *   **GUI Controls:** Test buttons for key DLL functions.
@@ -113,13 +117,14 @@ This project uses a two-part architecture:
 ## Development Notes & Known Issues
 
 *   Offsets are specific to WoW 3.3.5a (12340).
-*   **Recent Fixes:** 
-    *   Implemented resource conditions (e.g., `Player Energy >= X`) with GUI input.
+*   **Recent Changes:**
+    *   Refactored GUI code into separate tab handler modules (`gui/` directory) for better organization.
+    *   Fixed various initialization errors related to GUI state and attribute access.
+    *   Improved IPC/DLL stability for cooldown/casting.
+    *   Fixed GCD handling after spell casts.
+    *   Implemented resource/distance conditions (e.g., `Player Energy >= X`) with GUI input.
     *   Fixed rotation engine logic to check conditions *before* cooldowns.
     *   Added check to ensure a target exists for rules specifying "target".
-    *   Resolved various `AttributeError`s during GUI/rotation initialization.
-    *   Corrected GCD handling after spell casts.
-    *   Improved IPC/DLL stability for cooldown/casting.
 *   Rotation engine condition checking for Auras, Spell Readiness, etc., are still placeholders and need implementation (likely via Lua/DLL).
 *   The `is_attackable` check logic may need refinement based on specific unit flags.
 *   Macro execution via rules is not implemented.
