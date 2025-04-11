@@ -548,44 +548,58 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
 
                     case REQ_GET_SPELL_INFO:
                         // Ensure required function pointers are valid
-                        if (L && lua_pushinteger && lua_GetSpellInfo && lua_gettop && lua_tolstring && lua_tonumber && lua_settop && lua_type && lua_isnumber && lua_tointeger) {
+                        if (L && lua_loadbuffer && lua_pcall && lua_pushinteger && lua_gettop && lua_type && lua_tolstring && lua_tonumber && lua_tointeger && lua_settop && lua_isnumber) {
                             try {
-                                sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] hkEndScene: Processing REQ_GET_SPELL_INFO for spell %d.\n", req.spell_id);
+                                sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] hkEndScene: Processing REQ_GET_SPELL_INFO via Lua pcall for spell %d.\n", req.spell_id);
                                 OutputDebugStringA(log_buffer);
 
                                 int top_before = lua_gettop(L);
-                                lua_pushinteger(L, req.spell_id);
-                                int num_results = lua_GetSpellInfo(L);
+                                const char* luaCode = "return GetSpellInfo(...)";
+                                int load_status = lua_loadbuffer(L, luaCode, strlen(luaCode), "WowInjectDLL_GetInfo");
 
-                                if (num_results > 0) {
-                                     // Indices relative to stack top AFTER GetSpellInfo call (which is top_before + num_results)
-                                    // Name = index 2 => top_before + 2
-                                    // Rank = index 3 => top_before + 3
-                                    // Icon = index 4 => top_before + 4
-                                    // Cost = index 5 => top_before + 5
-                                    // PowerType = index 7 => top_before + 7
-                                    // CastTime = index 8 => top_before + 8
-                                    // MinRange = index 9 => top_before + 9
-                                    // MaxRange = index 10 ? (Needs verification if it's returned)
+                                if (load_status == 0) {
+                                    lua_pushinteger(L, req.spell_id);
+                                    int pcall_status = lua_pcall(L, 1, -1, 0);
+                                    int num_results = lua_gettop(L) - top_before;
 
-                                    // Check if we got at least 9 results
-                                    if (num_results >= 9) {
-                                        const char* name = (lua_type(L, top_before + 2) == 4) ? lua_tolstring(L, top_before + 2, NULL) : "N/A";
-                                        const char* rank = (lua_type(L, top_before + 3) == 4) ? lua_tolstring(L, top_before + 3, NULL) : "N/A";
-                                        const char* icon = (lua_type(L, top_before + 4) == 4) ? lua_tolstring(L, top_before + 4, NULL) : "N/A";
-                                        double cost = lua_isnumber(L, top_before + 5) ? lua_tonumber(L, top_before + 5) : 0.0;
-                                        int powerType = lua_isnumber(L, top_before + 7) ? lua_tointeger(L, top_before + 7) : -1;
-                                        double castTime = lua_isnumber(L, top_before + 8) ? lua_tonumber(L, top_before + 8) : -1.0;
-                                        double minRange = lua_isnumber(L, top_before + 9) ? lua_tonumber(L, top_before + 9) : -1.0;
+                                    if (pcall_status == 0) {
+                                        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] GetSpellInfo pcall success. Results count: %d\n", num_results);
+                                        OutputDebugStringA(log_buffer);
 
-                                        // Attempt to read potential maxRange at index 10
-                                        double maxRange = -1.0;
-                                        if (num_results >= 10 && lua_isnumber(L, top_before + 10)) {
-                                            maxRange = lua_tonumber(L, top_before + 10);
-                                        } else {
-                                            sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] GetSpellInfo: MaxRange (index 10) not found or not number (Type=%d). Num results=%d\n", lua_type(L, top_before + 10), num_results);
+                                        // --- Revised Result Parsing ---
+                                        // Attempt to parse values even if fewer than 10 results, using defaults
+                                        const char* name = "N/A";
+                                        const char* rank = "N/A";
+                                        const char* icon = "N/A";
+                                        double cost = 0.0;
+                                        int powerType = -1;
+                                        double castTime = -1.0;
+                                        double minRange = -1.0;
+                                        double maxRange = -1.0; // Default to -1.0
+
+                                        // Parse based on index, checking type and number of results available
+                                        if (num_results >= 1 && lua_type(L, top_before + 1) == 4) name = lua_tolstring(L, top_before + 1, NULL);
+                                        if (num_results >= 2 && lua_type(L, top_before + 2) == 4) rank = lua_tolstring(L, top_before + 2, NULL);
+                                        if (num_results >= 3 && lua_type(L, top_before + 3) == 4) icon = lua_tolstring(L, top_before + 3, NULL);
+                                        if (num_results >= 4 && lua_isnumber(L, top_before + 4)) cost = lua_tonumber(L, top_before + 4);
+                                        if (num_results >= 6 && lua_isnumber(L, top_before + 6)) powerType = lua_tointeger(L, top_before + 6);
+                                        if (num_results >= 7 && lua_isnumber(L, top_before + 7)) castTime = lua_tonumber(L, top_before + 7);
+                                        if (num_results >= 8 && lua_isnumber(L, top_before + 8)) minRange = lua_tonumber(L, top_before + 8);
+                                        // Specifically check for maxRange at index 9
+                                        if (num_results >= 9 && lua_isnumber(L, top_before + 9)) {
+                                            maxRange = lua_tonumber(L, top_before + 9);
+                                            sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Parsed maxRange (index 9): %.1f\n", maxRange);
                                             OutputDebugStringA(log_buffer);
+                                        } else if (num_results < 9) {
+                                            sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] maxRange (index 9) not available (results=%d).\n", num_results);
+                                            OutputDebugStringA(log_buffer);
+                                            // maxRange remains -1.0 (default)
+                                        } else {
+                                            sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] maxRange (index 9) is not a number (type=%d).\n", lua_type(L, top_before + 9));
+                                            OutputDebugStringA(log_buffer);
+                                             // maxRange remains -1.0 (default)
                                         }
+
 
                                         char info_buf[1024];
                                         sprintf_s(info_buf, sizeof(info_buf), "SPELL_INFO:%s|%s|%.0f|%.1f|%.1f|%s|%.0f|%d",
@@ -593,41 +607,41 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                                                   (rank && strlen(rank) > 0) ? rank : "N/A",
                                                   castTime,
                                                   minRange,
-                                                  maxRange, // Now potentially holds a value
+                                                  maxRange, // Use the parsed or default value
                                                   (icon && strlen(icon) > 0) ? icon : "N/A",
                                                   cost,
                                                   powerType);
                                         response_str = info_buf;
-                                    } else {
-                                        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] GetSpellInfo did not return enough results (returned %d, expected >= 9) for spell %d.\n", num_results, req.spell_id);
+                                        // --- End Revised Parsing ---
+
+                                    } else { // pcall failed
+                                        const char* error_msg = "<Unknown pcall error>";
+                                        if (lua_isstring && lua_isstring(L, -1)) { error_msg = lua_tolstring(L, -1, NULL); }
+                                        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] GetSpellInfo pcall failed (%d): %s\n", pcall_status, error_msg ? error_msg : "(no message)");
                                         OutputDebugStringA(log_buffer);
-                                        response_str = "SPELLINFO_ERR:GetSpellInfo failed (results)";
+                                        response_str = "SPELLINFO_ERR:Lua pcall failed";
                                     }
-                                    lua_settop(L, top_before); // Clean up stack
+                                    lua_settop(L, top_before); // Clean stack
 
-                                } else {
-                                    sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] GetSpellInfo did not return any results (returned %d) for spell %d.\n", num_results, req.spell_id);
+                                } else { // Load failed
+                                    const char* load_error_msg = "<Unknown load error>";
+                                    if (lua_isstring && lua_tolstring && lua_isstring(L, -1)) { load_error_msg = lua_tolstring(L, -1, NULL); }
+                                    sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] GetSpellInfo loadbuffer failed (%d): %s\n", load_status, load_error_msg ? load_error_msg : "(no message)");
                                     OutputDebugStringA(log_buffer);
-                                    response_str = "SPELLINFO_ERR:GetSpellInfo failed (no results)";
+                                    response_str = "SPELLINFO_ERR:Lua load failed";
+                                    if (lua_settop) { lua_settop(L, top_before); }
                                 }
-
                             } catch (const std::exception& e) {
-                                std::string errorMsg = "[WoWInjectDLL] ERROR in GetSpellInfo processing (exception): ";
-                                errorMsg += e.what();
-                                errorMsg += "\n";
-                                OutputDebugStringA(errorMsg.c_str());
-                                response_str = "SPELLINFO_ERR:crash";
-                                if (L && lua_settop) lua_settop(L, 0);
+                                std::string errorMsg = "[WoWInjectDLL] ERROR in GetSpellInfo Lua processing (exception): "; errorMsg += e.what(); errorMsg += "\n"; OutputDebugStringA(errorMsg.c_str());
+                                response_str = "SPELLINFO_ERR:crash"; if (L && lua_settop) lua_settop(L, 0);
                             } catch (...) {
-                                OutputDebugStringA("[WoWInjectDLL] CRITICAL ERROR in GetSpellInfo processing: Memory access violation.\n");
-                                response_str = "SPELLINFO_ERR:crash";
-                                if (L && lua_settop) lua_settop(L, 0);
+                                OutputDebugStringA("[WoWInjectDLL] CRITICAL ERROR in GetSpellInfo Lua processing: Memory access violation.\n"); response_str = "SPELLINFO_ERR:crash"; if (L && lua_settop) lua_settop(L, 0);
                             }
                         } else {
-                            OutputDebugStringA("[WoWInjectDLL] hkEndScene: ERROR - Lua state or required Lua functions null for GetSpellInfo!\n");
+                            OutputDebugStringA("[WoWInjectDLL] hkEndScene: ERROR - Lua state or required Lua functions null for GetSpellInfo (Lua method)!\n");
                             response_str = "SPELLINFO_ERR:Lua state/funcs null";
                         }
-                        break;
+                        break; // End REQ_GET_SPELL_INFO
 
                     case REQ_CAST_SPELL:
                         // Ensure CastLocalPlayerSpell pointer is valid
