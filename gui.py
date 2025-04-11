@@ -571,6 +571,11 @@ class WowMonitorApp:
              # self.rotation_editor_tab_handler.update_button_states(core_ready, ipc_ready, is_rotation_running)
              pass # Assuming editor tab manages its state internally for now
 
+        # --- Test Combo Points Button --- #
+        test_cp_state = tk.NORMAL if core_ready else tk.DISABLED
+        if self.rotation_control_tab_handler.test_cp_button and self.rotation_control_tab_handler.test_cp_button.winfo_exists():
+             self.rotation_control_tab_handler.test_cp_button.config(state=test_cp_state)
+
     def update_data(self):
         """Periodically updates displayed data and core status."""
         # (Implementation updated to call monitor tab handler)

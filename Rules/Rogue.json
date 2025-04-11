@@ -1,6 +1,22 @@
 [
     {
         "action": "Spell",
+        "detail": 2098,
+        "target": "target",
+        "conditions": [
+            {
+                "condition": "Player Energy >= X",
+                "value_x": 35.0
+            },
+            {
+                "condition": "Player Combo Points >= X",
+                "value_x": 3.0
+            }
+        ],
+        "cooldown": 0.0
+    },
+    {
+        "action": "Spell",
         "detail": 1752,
         "target": "target",
         "condition": "Player Energy >= X",

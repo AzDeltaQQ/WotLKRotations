@@ -1,9 +1,9 @@
 import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox, filedialog, simpledialog
+from tkinter import ttk, scrolledtext, messagebox, filedialog, simpledialog, Listbox
 import os
 import json
 import traceback
-from typing import TYPE_CHECKING, Optional, Any
+from typing import TYPE_CHECKING, Optional, Any, List, Dict
 
 # Project Modules (for type hints)
 from wow_object import WowObject # Needed for spell info power types
@@ -12,6 +12,8 @@ from wow_object import WowObject # Needed for spell info power types
 if TYPE_CHECKING:
     from gui import WowMonitorApp # Import from the main gui module
 
+# Constants (can be moved later)
+RULE_SAVE_DIR = "Rules"
 
 class RotationEditorTab:
     """Handles the UI and logic for the Rotation Editor Tab."""
@@ -44,6 +46,11 @@ class RotationEditorTab:
         self.lua_code_var = self.app.lua_code_var
         self.macro_text_var = self.app.macro_text_var
 
+        # Internal state for the currently edited conditions list
+        self._current_rule_conditions: List[Dict[str, Any]] = []
+        # --- Initialize selected_rule_index --- 
+        self.selected_rule_index: Optional[int] = None # Track selected rule in main list
+
         # Widgets for rule definition (left pane)
         self.action_dropdown: Optional[ttk.Combobox] = None
         self.detail_frame: Optional[ttk.Frame] = None # Container for spell/lua/macro
@@ -55,14 +62,14 @@ class RotationEditorTab:
         self.macro_text_entry: Optional[ttk.Entry] = None
         self.target_dropdown: Optional[ttk.Combobox] = None
         self.condition_dropdown: Optional[ttk.Combobox] = None
-        self.condition_value_label: Optional[ttk.Label] = None
-        self.condition_value_x_entry: Optional[ttk.Entry] = None
-        self.condition_value_y_label: Optional[ttk.Label] = None
-        self.condition_value_y_entry: Optional[ttk.Entry] = None
-        self.condition_text_label: Optional[ttk.Label] = None
-        self.condition_text_entry: Optional[ttk.Entry] = None
-        self.int_cd_entry: Optional[ttk.Entry] = None
+        self.condition_value_frame: Optional[ttk.Frame] = None
         self.add_update_button: Optional[ttk.Button] = None
+
+        # --- NEW: Widgets for managing conditions of the *current* rule ---
+        self.current_conditions_frame: Optional[ttk.LabelFrame] = None
+        self.conditions_listbox: Optional[tk.Listbox] = None
+        self.remove_condition_button: Optional[ttk.Button] = None
+        # --- End NEW ---
 
         # Widgets for spell info (left pane)
         self.list_spells_button: Optional[ttk.Button] = None
@@ -82,7 +89,7 @@ class RotationEditorTab:
 
         # --- Initial UI State Update ---
         self._update_detail_inputs() # Call initial updates after UI setup
-        self._update_condition_inputs()
+        self._update_condition_value_inputs_visibility()
 
     def _setup_ui(self):
         """Creates the widgets for the Rotation Editor tab."""
@@ -113,22 +120,18 @@ class RotationEditorTab:
         self.action_dropdown.bind("<<ComboboxSelected>>", self._update_detail_inputs)
 
         # Row 1: Detail Frame (Container for Spell/Lua/Macro inputs)
-        self.detail_frame = ttk.Frame(define_frame)
-        self.detail_frame.grid(row=1, column=0, columnspan=4, sticky="ew", padx=5, pady=3)
-        self.detail_frame.columnconfigure(1, weight=1) # Allow detail input to expand
+        self.detail_inputs_frame = ttk.Frame(define_frame)
+        self.detail_inputs_frame.grid(row=1, column=0, columnspan=4, sticky="ew", padx=5, pady=3)
+        self.detail_inputs_frame.columnconfigure(1, weight=1) # Allow detail input to expand
 
         # Detail Widgets (placed inside detail_frame by _update_detail_inputs)
-        self.spell_id_label = ttk.Label(self.detail_frame, text="Spell ID:")
-        # Use self.spell_id_var from app
-        self.spell_id_entry = ttk.Entry(self.detail_frame, textvariable=self.spell_id_var)
-        self.lua_code_label = ttk.Label(self.detail_frame, text="Lua Code:")
-        # Use self.app.CODE_FONT
-        self.lua_code_text = scrolledtext.ScrolledText(self.detail_frame, wrap=tk.WORD, height=4, width=30, font=self.app.CODE_FONT)
-        # Bind to self._on_lua_change in this class (syncs widget to self.lua_code_var)
+        self.spell_id_label = ttk.Label(self.detail_inputs_frame, text="Spell ID:")
+        self.spell_id_entry = ttk.Entry(self.detail_inputs_frame, textvariable=self.spell_id_var)
+        self.lua_code_label = ttk.Label(self.detail_inputs_frame, text="Lua Code:")
+        self.lua_code_text = scrolledtext.ScrolledText(self.detail_inputs_frame, wrap=tk.WORD, height=4, width=30, font=self.app.CODE_FONT)
         self.lua_code_text.bind("<KeyRelease>", self._on_lua_change)
-        self.macro_text_label = ttk.Label(self.detail_frame, text="Macro Text:")
-        # Use self.macro_text_var from app
-        self.macro_text_entry = ttk.Entry(self.detail_frame, textvariable=self.macro_text_var)
+        self.macro_text_label = ttk.Label(self.detail_inputs_frame, text="Macro Text:")
+        self.macro_text_entry = ttk.Entry(self.detail_inputs_frame, textvariable=self.macro_text_var)
 
         # Row 2: Target (Use self.target_var from app)
         ttk.Label(define_frame, text="Target:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=3)
@@ -142,28 +145,78 @@ class RotationEditorTab:
         self.condition_dropdown = ttk.Combobox(define_frame, textvariable=self.condition_var, values=self.app.rule_conditions, state="readonly", width=28)
         self.condition_dropdown.grid(row=3, column=1, columnspan=3, sticky="ew", padx=5, pady=3)
         self.condition_dropdown.set("None") # Default
-        # Bind to self._update_condition_inputs in this class
-        self.condition_dropdown.bind("<<ComboboxSelected>>", self._update_condition_inputs)
+        # Bind to self._update_condition_value_inputs_visibility in this class
+        self.condition_dropdown.bind("<<ComboboxSelected>>", self._update_condition_value_inputs_visibility)
 
-        # Row 4: Dynamic Condition Inputs (Labels & Entries managed by _update_condition_inputs)
-        self.condition_value_label = ttk.Label(define_frame, text="Value (X):") # Default text
-        # Use self.condition_value_x_var from app
-        self.condition_value_x_entry = ttk.Entry(define_frame, textvariable=self.condition_value_x_var, state=tk.DISABLED, width=10)
-        self.condition_value_y_label = ttk.Label(define_frame, text="Value (Y):") # Default text
-        # Use self.condition_value_y_var from app
-        self.condition_value_y_entry = ttk.Entry(define_frame, textvariable=self.condition_value_y_var, state=tk.DISABLED, width=10)
-        self.condition_text_label = ttk.Label(define_frame, text="Name/ID:") # Default text
-        # Use self.condition_text_var from app
-        self.condition_text_entry = ttk.Entry(define_frame, textvariable=self.condition_text_var, state=tk.DISABLED)
+        # Row 4: Dynamic Condition Inputs (Labels & Entries managed by _update_condition_value_inputs_visibility)
+        self.condition_value_frame = ttk.Frame(define_frame)
+        self.condition_value_frame.grid(row=4, column=0, columnspan=4, pady=10)
+        self.condition_value_frame.columnconfigure(3, weight=0) # Ensure Add Cond button doesn't expand weirdly
 
-        # Row 5: Internal Cooldown (Use self.int_cd_var from app)
-        ttk.Label(define_frame, text="Int. CD (s):").grid(row=5, column=0, sticky=tk.W, padx=5, pady=3)
-        self.int_cd_entry = ttk.Entry(define_frame, textvariable=self.int_cd_var, width=10)
-        self.int_cd_entry.grid(row=5, column=1, sticky="ew", padx=5, pady=3)
+        # Value X Widgets (inside condition_value_frame)
+        self.condition_value_x_frame = ttk.Frame(self.condition_value_frame) # Container frame for X
+        self.condition_value_x_label = ttk.Label(self.condition_value_x_frame, text="Value (X):")
+        self.condition_value_x_label.pack(side=tk.LEFT, padx=(0, 2)) # Pack inside x_frame
+        self.condition_value_x_entry = ttk.Entry(self.condition_value_x_frame, textvariable=self.condition_value_x_var, width=8)
+        self.condition_value_x_entry.pack(side=tk.LEFT) # Pack inside x_frame
+        # Value Y Widgets
+        self.condition_value_y_frame = ttk.Frame(self.condition_value_frame) # Container frame for Y
+        self.condition_value_y_label = ttk.Label(self.condition_value_y_frame, text="Value (Y):")
+        self.condition_value_y_label.pack(side=tk.LEFT, padx=(0, 2)) # Pack inside y_frame
+        self.condition_value_y_entry = ttk.Entry(self.condition_value_y_frame, textvariable=self.condition_value_y_var, width=8)
+        self.condition_value_y_entry.pack(side=tk.LEFT) # Pack inside y_frame
+        # Text Widgets
+        self.condition_text_frame = ttk.Frame(self.condition_value_frame) # Container frame for Text
+        self.condition_text_label = ttk.Label(self.condition_text_frame, text="Name/ID:")
+        self.condition_text_label.pack(side=tk.LEFT, padx=(0, 2)) # Pack inside text_frame
+        self.condition_text_entry = ttk.Entry(self.condition_text_frame, textvariable=self.condition_text_var, width=15)
+        self.condition_text_entry.pack(side=tk.LEFT) # Pack inside text_frame
+        # (These container frames - x_frame, y_frame, text_frame - are gridded/forgotten inside condition_value_frame by _update_condition_value_inputs_visibility)
 
-        # Row 6: Add/Update Button (Bind to self.add_rotation_rule in this class)
-        self.add_update_button = ttk.Button(define_frame, text="Add Rule", command=self.add_rotation_rule)
-        self.add_update_button.grid(row=6, column=0, columnspan=4, pady=10)
+        self.add_condition_button = ttk.Button(self.condition_value_frame, text="Add Cond.", command=self._add_condition_to_list, width=10)
+        self.add_condition_button.grid(row=0, column=3, padx=(5, 0))
+
+        # --- NEW: Current Conditions List Section ---
+        self.current_conditions_frame = ttk.LabelFrame(define_frame, text="Current Rule Conditions", padding="5")
+        self.current_conditions_frame.grid(row=5, column=0, columnspan=4, sticky="ew", padx=5, pady=(5,10))
+        self.current_conditions_frame.columnconfigure(0, weight=1) # Listbox expands
+        self.current_conditions_frame.rowconfigure(0, weight=1) # Listbox expands vertically (optional)
+
+        self.conditions_listbox = tk.Listbox(
+            self.current_conditions_frame,
+            height=3, # Start small
+            exportselection=False,
+            # Apply styles from app instance if desired, or use defaults
+            bg=self.app.rule_listbox_style.get("bg", "#FFFFFF"),
+            fg=self.app.rule_listbox_style.get("fg", "#000000"),
+            font=self.app.DEFAULT_FONT,
+            selectbackground=self.app.rule_listbox_style.get("selectbackground", "#AED6F1"), # Lighter blue?
+            selectforeground=self.app.rule_listbox_style.get("selectforeground", "#000000")
+        )
+        self.conditions_listbox.grid(row=0, column=0, sticky="nsew")
+
+        cond_scrollbar = ttk.Scrollbar(self.current_conditions_frame, orient=tk.VERTICAL, command=self.conditions_listbox.yview)
+        self.conditions_listbox.config(yscrollcommand=cond_scrollbar.set)
+        cond_scrollbar.grid(row=0, column=1, sticky='ns')
+
+        self.remove_condition_button = ttk.Button(self.current_conditions_frame, text="Remove Cond.", command=self._remove_selected_condition, width=12)
+        self.remove_condition_button.grid(row=1, column=0, columnspan=2, pady=(5,0), sticky='ew')
+        # --- End NEW ---
+
+        # Row 6: Internal Cooldown (Use self.int_cd_var from app)
+        ttk.Label(define_frame, text="Int. CD (s):").grid(row=6, column=0, sticky=tk.W, padx=5, pady=3)
+        self.int_cd_entry = ttk.Entry(define_frame, textvariable=self.int_cd_var, width=8)
+        self.int_cd_entry.grid(row=6, column=1, sticky=tk.W, padx=5, pady=3)
+
+        # Row 7: Add/Update Rule Buttons Frame
+        add_update_frame = ttk.Frame(define_frame)
+        add_update_frame.grid(row=7, column=0, columnspan=4, pady=10)
+
+        self.add_new_rule_button = ttk.Button(add_update_frame, text="Add New Rule", command=self._add_new_rule)
+        self.add_new_rule_button.pack(side=tk.LEFT, padx=5)
+
+        self.update_selected_rule_button = ttk.Button(add_update_frame, text="Update Selected Rule", command=self._update_selected_rule, state=tk.DISABLED) # Starts disabled
+        self.update_selected_rule_button.pack(side=tk.LEFT, padx=5)
 
         # --- Spell Info Section ---
         spell_info_frame = ttk.LabelFrame(left_pane, text="Spell Info", padding="10")
@@ -190,14 +243,27 @@ class RotationEditorTab:
         rule_list_frame.columnconfigure(0, weight=1)
 
         # Apply style from self.app.rule_listbox_style
-        self.rule_listbox = tk.Listbox(rule_list_frame, height=15, selectmode=tk.SINGLE, **self.app.rule_listbox_style)
-        self.rule_listbox.grid(row=0, column=0, sticky="nsew")
+        self.rule_listbox = Listbox(
+            rule_list_frame,
+            # Apply styles from app instance
+            bg=self.app.rule_listbox_style.get("bg", "#FFFFFF"),
+            fg=self.app.rule_listbox_style.get("fg", "#000000"),
+            font=self.app.DEFAULT_FONT,
+            selectbackground=self.app.rule_listbox_style.get("selectbackground", "#0078D7"),
+            selectforeground=self.app.rule_listbox_style.get("selectforeground", "#FFFFFF"),
+            borderwidth=self.app.rule_listbox_style.get("borderwidth", 1),
+            highlightthickness=self.app.rule_listbox_style.get("highlightthickness", 1),
+            exportselection=False # Prevent selection loss on focus change
+        )
+        self.rule_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         # Bind to self.on_rule_select in this class
         self.rule_listbox.bind('<<ListboxSelect>>', self.on_rule_select)
+        # Bind left-click release to handle deselection
+        self.rule_listbox.bind('<ButtonRelease-1>', self._handle_listbox_click)
 
         scrollbar = ttk.Scrollbar(rule_list_frame, orient=tk.VERTICAL, command=self.rule_listbox.yview)
         self.rule_listbox.config(yscrollcommand=scrollbar.set)
-        scrollbar.grid(row=0, column=1, sticky="ns")
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         # --- Listbox Button Frame ---
         rule_button_frame = ttk.Frame(right_pane)
@@ -207,7 +273,7 @@ class RotationEditorTab:
         self.move_up_button.pack(side=tk.LEFT, padx=(0,5))
         self.move_down_button = ttk.Button(rule_button_frame, text="Move Down", command=self.move_rule_down)
         self.move_down_button.pack(side=tk.LEFT, padx=5)
-        self.remove_rule_button = ttk.Button(rule_button_frame, text="Remove Selected", command=self.remove_selected_rule)
+        self.remove_rule_button = ttk.Button(rule_button_frame, text="Remove Selected", command=self._remove_selected_rule)
         self.remove_rule_button.pack(side=tk.LEFT, padx=5)
         ttk.Frame(rule_button_frame, width=20).pack(side=tk.LEFT) # Spacer
         self.clear_button = ttk.Button(rule_button_frame, text="Clear Input", command=self.clear_rule_input_fields)
@@ -227,7 +293,7 @@ class RotationEditorTab:
         # Check widgets exist
         if not all([self.spell_id_label, self.spell_id_entry, self.lua_code_label,
                     self.lua_code_text, self.macro_text_label, self.macro_text_entry,
-                    self.detail_frame]):
+                    self.detail_inputs_frame]):
             self.app.log_message("Detail input widgets not initialized.", "ERROR")
             return
 
@@ -241,92 +307,24 @@ class RotationEditorTab:
         self.macro_text_label.grid_forget()
         self.macro_text_entry.grid_forget()
         # Reset row/column configure in case Lua expanded it
-        self.detail_frame.rowconfigure(0, weight=0)
-        self.detail_frame.columnconfigure(1, weight=1) # Default weight for entry
+        self.detail_inputs_frame.rowconfigure(0, weight=0)
+        self.detail_inputs_frame.columnconfigure(1, weight=1) # Default weight for entry
 
-        # Grid the correct label and input widget inside self.detail_frame
+        # Grid the correct label and input widget inside self.detail_inputs_frame
         if action_type == "Spell":
             self.spell_id_label.grid(row=0, column=0, sticky=tk.W, padx=(0, 5), pady=2)
             self.spell_id_entry.grid(row=0, column=1, sticky="ew", pady=2)
         elif action_type == "Lua":
-            self.lua_code_label.grid(row=0, column=0, sticky=tk.NW, padx=(0, 5), pady=2) # Align top-west
+            self.lua_code_label.grid(row=0, column=0, sticky=tk.W, padx=(0, 5), pady=2)
             self.lua_code_text.grid(row=0, column=1, sticky="nsew", pady=2)
             # Sync text widget content from variable (important if action switched)
             self.lua_code_text.delete('1.0', tk.END)
             self.lua_code_text.insert('1.0', self.lua_code_var.get())
             # Allow Lua text box to expand vertically if needed
-            self.detail_frame.rowconfigure(0, weight=1)
+            self.detail_inputs_frame.rowconfigure(0, weight=1)
         elif action_type == "Macro":
             self.macro_text_label.grid(row=0, column=0, sticky=tk.W, padx=(0, 5), pady=2)
             self.macro_text_entry.grid(row=0, column=1, sticky="ew", pady=2)
-
-    def _update_condition_inputs(self, event=None):
-        """Shows/hides the correct dynamic condition input widgets."""
-        # Check widgets exist
-        if not all([self.condition_value_label, self.condition_value_x_entry,
-                    self.condition_value_y_label, self.condition_value_y_entry,
-                    self.condition_text_label, self.condition_text_entry]):
-            self.app.log_message("Condition input widgets not initialized.", "ERROR")
-            return
-
-        condition = self.condition_var.get()
-
-        # Forget all dynamic inputs first
-        self.condition_value_label.grid_forget()
-        self.condition_value_x_entry.grid_forget()
-        self.condition_value_y_label.grid_forget()
-        self.condition_value_y_entry.grid_forget()
-        self.condition_text_label.grid_forget()
-        self.condition_text_entry.grid_forget()
-
-        # Reset variables for hidden fields to prevent carrying over old values
-        # Use variables from self.app
-        self.condition_value_x_var.set("")
-        self.condition_value_y_var.set("")
-        self.condition_text_var.set("")
-
-        # Disable entries by default, enable only if shown
-        self.condition_value_x_entry.config(state=tk.DISABLED)
-        self.condition_value_y_entry.config(state=tk.DISABLED)
-        self.condition_text_entry.config(state=tk.DISABLED)
-
-        # --- Show and configure inputs based on selected condition (using row 4 of define_frame) ---
-
-        # Conditions requiring a single numeric value (X)
-        if "< X" in condition or "> X" in condition or ">= X" in condition:
-            label_text = "Value (X):" # Default label
-            if "HP %" in condition: label_text = "HP % (X):"
-            elif "Mana %" in condition: label_text = "Mana % (X):"
-            elif "Distance" in condition: label_text = "Dist (X) yd:"
-            elif "Rage" in condition: label_text = "Rage (X):"
-            elif "Energy" in condition: label_text = "Energy (X):"
-            elif "Combo Points" in condition: label_text = "CPs (X):"
-            # Add more specific labels if needed
-
-            self.condition_value_label.config(text=label_text)
-            self.condition_value_label.grid(row=4, column=0, sticky=tk.W, padx=5, pady=3)
-            self.condition_value_x_entry.config(state=tk.NORMAL)
-            self.condition_value_x_entry.grid(row=4, column=1, columnspan=1, sticky="ew", padx=5, pady=3) # Use col 1
-
-        # Conditions requiring two numeric values (X and Y)
-        elif "Between X-Y" in condition:
-            self.condition_value_label.config(text="Min HP% (X):")
-            self.condition_value_label.grid(row=4, column=0, sticky=tk.W, padx=(5,2), pady=3)
-            self.condition_value_x_entry.config(state=tk.NORMAL)
-            self.condition_value_x_entry.grid(row=4, column=1, sticky="ew", padx=(0,5), pady=3)
-
-            self.condition_value_y_label.config(text="Max (Y):")
-            self.condition_value_y_label.grid(row=4, column=2, sticky=tk.W, padx=(5,2), pady=3)
-            self.condition_value_y_entry.config(state=tk.NORMAL)
-            self.condition_value_y_entry.grid(row=4, column=3, sticky="ew", padx=(0,5), pady=3)
-
-        # Conditions requiring text input (Aura Name/ID or Spell ID)
-        elif "Aura" in condition or "Spell Ready" in condition:
-            label_text = "Aura Name/ID:" if "Aura" in condition else "Spell ID:"
-            self.condition_text_label.config(text=label_text)
-            self.condition_text_label.grid(row=4, column=0, sticky=tk.W, padx=5, pady=3)
-            self.condition_text_entry.config(state=tk.NORMAL)
-            self.condition_text_entry.grid(row=4, column=1, columnspan=3, sticky="ew", padx=5, pady=3)
 
     def _on_lua_change(self, event=None):
         """Updates the lua_code_var when the ScrolledText widget changes."""
@@ -362,9 +360,17 @@ class RotationEditorTab:
         self.condition_value_y_var.set("")
         self.condition_text_var.set("")
 
+        # --- NEW: Clear current conditions list and its listbox ---
+        self._current_rule_conditions = []
+        if hasattr(self, 'conditions_listbox') and self.conditions_listbox:
+            try:
+                self.conditions_listbox.delete(0, tk.END)
+            except tk.TclError: pass # Ignore if widget destroyed
+        # --- End NEW ---
+
         # Update visibility of detail and condition inputs based on cleared state
         self._update_detail_inputs()
-        self._update_condition_inputs()
+        self._update_condition_value_inputs_visibility()
 
         # Deselect listbox item
         if hasattr(self, 'rule_listbox') and self.rule_listbox and self.rule_listbox.winfo_exists():
@@ -385,22 +391,61 @@ class RotationEditorTab:
 
         indices = self.rule_listbox.curselection()
         if not indices:
-            if self.add_update_button:
-                self.add_update_button.config(text="Add Rule")
+            self.selected_rule_index = None
+            if self.update_selected_rule_button:
+                self.update_selected_rule_button.config(state=tk.DISABLED)
             return
         index = indices[0]
+
+        # --- Sanity Check: Ensure index is valid before proceeding --- 
+        if not (0 <= index < len(self.app.rotation_rules)):
+            self.app.log_message(f"on_rule_select: Index {index} out of bounds for rules list (len={len(self.app.rotation_rules)}). Clearing selection.", "WARN")
+            self.rule_listbox.selection_clear(0, tk.END)
+            self.selected_rule_index = None
+            if self.update_selected_rule_button:
+                self.update_selected_rule_button.config(state=tk.DISABLED)
+            # Consider clearing fields? Maybe not, leave them as they were.
+            # self.clear_rule_input_fields()
+            return
+        # --- End Sanity Check ---
+
+        # If check passes, set the index
+        self.selected_rule_index = index
 
         try:
             # Use self.app.rotation_rules (this list holds the editor rules)
             rule = self.app.rotation_rules[index]
             action = rule.get('action', 'Spell')
-            detail = rule.get('detail', '')
+            detail_val = rule.get('detail', '')
             target = rule.get('target', self.app.rule_targets[0])
             condition = rule.get('condition', self.app.rule_conditions[0])
             cooldown = rule.get('cooldown', 0.0)
             value_x = rule.get('condition_value_x', '')
             value_y = rule.get('condition_value_y', '')
             cond_text = rule.get('condition_text', '')
+
+            # --- NEW: Load conditions into the internal list and listbox ---
+            loaded_conditions = rule.get('conditions') # Get the list, might be None or empty
+
+            # --- BACKWARD COMPATIBILITY: Handle old single condition format --- 
+            if not loaded_conditions and 'condition' in rule and rule['condition'] != 'None':
+                self.app.log_message(f"Loading rule {index+1} with old condition format. Converting.", "DEBUG")
+                old_condition_data = {"condition": rule['condition']}
+                if 'condition_value_x' in rule: old_condition_data['value_x'] = rule['condition_value_x']
+                if 'condition_value_y' in rule: old_condition_data['value_y'] = rule['condition_value_y']
+                if 'condition_text' in rule: old_condition_data['text'] = rule['condition_text']
+                # Overwrite loaded_conditions with a list containing the converted old condition
+                loaded_conditions = [old_condition_data]
+            # --- End BACKWARD COMPATIBILITY --- 
+
+            # Use the potentially converted list, default to empty list if still None/empty
+            self._current_rule_conditions = list(loaded_conditions) if loaded_conditions else []
+
+            if hasattr(self, 'conditions_listbox') and self.conditions_listbox:
+                self.conditions_listbox.delete(0, tk.END)
+                for cond_data in self._current_rule_conditions:
+                    display_str = self._format_condition_for_display(cond_data)
+                    self.conditions_listbox.insert(tk.END, display_str)
 
             # --- Set controls using self.app variables ---
             self.action_var.set(action)
@@ -411,15 +456,15 @@ class RotationEditorTab:
             self.app.root.update_idletasks()
 
             if action == "Spell":
-                self.spell_id_var.set(str(detail))
+                self.spell_id_var.set(str(detail_val))
             elif action == "Macro":
-                self.macro_text_var.set(str(detail))
+                self.macro_text_var.set(str(detail_val))
             elif action == "Lua":
-                self.lua_code_var.set(str(detail))
+                self.lua_code_var.set(str(detail_val))
                 # Update ScrolledText widget
                 if hasattr(self, 'lua_code_text') and self.lua_code_text and self.lua_code_text.winfo_exists():
                     self.lua_code_text.delete('1.0', tk.END)
-                    self.lua_code_text.insert('1.0', str(detail))
+                    self.lua_code_text.insert('1.0', str(detail_val))
 
             self.target_var.set(target)
             self.condition_var.set(condition)
@@ -434,124 +479,102 @@ class RotationEditorTab:
 
             self.int_cd_var.set(f"{cooldown:.1f}")
 
-            if self.add_update_button:
-                self.add_update_button.config(text="Update Rule")
+            # Update button state
+            if self.update_selected_rule_button:
+                self.update_selected_rule_button.config(state=tk.NORMAL) # Enable update button
 
         except IndexError:
             self.app.log_message(f"Error: Selected index {index} out of range for editor rules.", "ERROR")
             self.clear_rule_input_fields()
+            self.update_selected_rule_button.config(state=tk.DISABLED)
         except Exception as e:
             self.app.log_message(f"Error loading selected rule into editor: {e}", "ERROR")
             traceback.print_exc() # Log via redirector
             self.clear_rule_input_fields()
+            self.update_selected_rule_button.config(state=tk.DISABLED)
 
-    def add_rotation_rule(self):
-        """Adds or updates a rotation rule based on the input fields to the app's editor list."""
-        # Use app state
-        if self.app.rotation_running:
-             messagebox.showerror("Error", "Stop the rotation before editing rules.")
-             return
-
-        # Use StringVars from app
+    def _gather_rule_data_from_inputs(self) -> Optional[Dict[str, Any]]:
+        """Gathers data from input fields and returns a rule dictionary or None on error."""
         action = self.action_var.get()
-        detail_str = ""
-        detail_val: Any = None
-        condition = self.condition_var.get()
-        value_x = None
-        value_y = None
-        cond_text = None
+        target = self.target_var.get()
+        conditions = self._current_rule_conditions # Use the internal list
 
-        try:
-            # --- Get Action Detail ---
-            if action == "Spell":
-                detail_str = self.spell_id_var.get().strip()
-                if not detail_str.isdigit() or int(detail_str) <= 0:
-                    raise ValueError("Spell ID must be a positive integer.")
-                detail_val = int(detail_str)
-            elif action == "Macro":
-                detail_str = self.macro_text_var.get().strip()
-                if not detail_str: raise ValueError("Macro Text cannot be empty.")
-                detail_val = detail_str
-            elif action == "Lua":
-                # Get from the variable synced by _on_lua_change
-                detail_str = self.lua_code_var.get().strip()
-                if not detail_str: raise ValueError("Lua Code cannot be empty.")
-                detail_val = detail_str
-            else:
-                raise ValueError(f"Unknown rule action: {action}")
+        # Get detail based on action
+        detail: Any = None
+        if action == "Spell":
+            try: detail = int(self.spell_id_var.get())
+            except ValueError: messagebox.showerror("Error", "Spell ID must be a number."); return None
+        elif action == "Macro": detail = self.macro_text_var.get()
+        elif action == "Lua": detail = self.lua_code_var.get() # Get from var synced by _on_lua_change
+        if detail is None or (isinstance(detail, str) and not detail.strip()):
+             messagebox.showerror("Error", f"{action} detail cannot be empty."); return None
 
-            # --- Get Condition Details ---
-            if "< X" in condition or "> X" in condition or ">= X" in condition:
-                val_str = self.condition_value_x_var.get().strip()
-                if not val_str: raise ValueError(f"Value (X) is required for condition '{condition}'.")
-                try:
-                    value_x = float(val_str)
-                    if value_x.is_integer(): value_x = int(value_x)
-                except ValueError:
-                    raise ValueError(f"Value (X) ('{val_str}') must be a number.")
-            elif "Between X-Y" in condition:
-                x_str = self.condition_value_x_var.get().strip()
-                y_str = self.condition_value_y_var.get().strip()
-                if not x_str or not y_str: raise ValueError(f"Values X and Y are required for condition '{condition}'.")
-                try:
-                    value_x = float(x_str)
-                    value_y = float(y_str)
-                    if value_x.is_integer(): value_x = int(value_x)
-                    if value_y.is_integer(): value_y = int(value_y)
-                except ValueError:
-                    raise ValueError(f"Values X ('{x_str}') and Y ('{y_str}') must be numbers.")
-                if value_x >= value_y: raise ValueError("Value X must be less than Value Y for Between X-Y.")
-            elif "Aura" in condition or "Spell Ready" in condition:
-                cond_text = self.condition_text_var.get().strip()
-                req = "Aura Name/ID" if "Aura" in condition else "Spell ID"
-                if not cond_text:
-                    raise ValueError(f"{req} is required for condition '{condition}'.")
+        # Get internal cooldown
+        try: cooldown = float(self.int_cd_var.get())
+        except ValueError: messagebox.showerror("Error", "Internal CD must be a number."); return None
 
-            # --- Get Target & Cooldown ---
-            target = self.target_var.get()
-            cooldown_str = self.int_cd_var.get().strip()
-            cooldown = float(cooldown_str)
-            if cooldown < 0: raise ValueError("Internal CD must be non-negative.")
+        # --- Create Rule Dictionary ---
+        rule_data: Dict[str, Any] = {
+            "action": action,
+            "detail": detail,
+            "target": target,
+            "conditions": conditions, # Save the list of conditions
+            "cooldown": cooldown,
+            # Add other fields like "enabled": True if needed
+        }
+        return rule_data
 
-            # --- Construct Rule Dictionary ---
-            rule = {
-                "action": action,
-                "detail": detail_val,
-                "target": target,
-                "condition": condition,
-                "cooldown": cooldown
-            }
-            if value_x is not None: rule['condition_value_x'] = value_x
-            if value_y is not None: rule['condition_value_y'] = value_y
-            if cond_text is not None: rule['condition_text'] = cond_text
+    def _add_new_rule(self):
+        """Adds a new rule based on the current input fields."""
+        new_rule_data = self._gather_rule_data_from_inputs()
+        if new_rule_data is None:
+            return # Error occurred during data gathering
 
-            # --- Add or Update Rule in app's editor list ---
-            selected_indices = self.rule_listbox.curselection() if self.rule_listbox else []
-            if selected_indices:
-                index_to_update = selected_indices[0]
-                # Modify app's list directly
-                self.app.rotation_rules[index_to_update] = rule
-                self.app.log_message(f"Updated editor rule at index {index_to_update}", "DEBUG")
-                self.update_rule_listbox(select_index=index_to_update)
-            else:
-                # Modify app's list directly
-                self.app.rotation_rules.append(rule)
-                new_index = len(self.app.rotation_rules) - 1
-                self.app.log_message(f"Added new rule to editor list", "DEBUG")
-                self.update_rule_listbox(select_index=new_index)
-                self.clear_rule_input_fields() # Clear inputs after adding NEW
+        # Add new rule to the main list in the app
+        self.app.rotation_rules.append(new_rule_data)
+        self.app.log_message("New rule added.", "INFO")
+        added_index = len(self.app.rotation_rules) - 1
 
-            # No auto-load to engine from editor add/update
+        # Refresh UI
+        self._update_rule_listbox_display()
+        # Select the newly added rule
+        if self.rule_listbox:
+            self.rule_listbox.selection_clear(0, tk.END)
+            self.rule_listbox.selection_set(added_index)
+            self.rule_listbox.see(added_index)
+        # Reload data into fields to confirm add and set button state
+        # self.on_rule_select() # Removed: _update_rule_listbox_display should handle selection state
 
-        except ValueError as e:
-             messagebox.showerror("Input Error", str(e))
-        except Exception as e:
-             messagebox.showerror("Error", f"Failed to add/update rule: {e}")
-             self.app.log_message(f"Error adding/updating editor rule: {e}", "ERROR")
-             traceback.print_exc()
+    def _update_selected_rule(self):
+        """Updates the currently selected rule with data from input fields."""
+        if self.selected_rule_index is None or not (0 <= self.selected_rule_index < len(self.app.rotation_rules)):
+            messagebox.showerror("Error", "No rule selected or selection is invalid.")
+            return
 
-    def remove_selected_rule(self):
-        """Removes the selected rule from the app's editor list."""
+        updated_rule_data = self._gather_rule_data_from_inputs()
+        if updated_rule_data is None:
+            return # Error occurred during data gathering
+
+        # Update the rule in the main list
+        self.app.rotation_rules[self.selected_rule_index] = updated_rule_data
+        self.app.log_message(f"Rule {self.selected_rule_index + 1} updated.", "INFO")
+        updated_index = self.selected_rule_index
+
+        # Clear the temporary condition list *after* successful update
+        self._current_rule_conditions = []
+
+        # Refresh UI
+        self._update_rule_listbox_display()
+        # Re-select the updated rule programmatically to ensure consistency
+        if self.rule_listbox:
+            self.rule_listbox.selection_clear(0, tk.END)
+            self.rule_listbox.selection_set(updated_index)
+            self.rule_listbox.see(updated_index)
+        # Reload data into fields to confirm update
+        # self.on_rule_select() # Removed: _update_rule_listbox_display should handle selection state
+
+    def _remove_selected_rule(self):
+        """Removes the selected rule from the main list (app.rotation_rules)."""
         if self.app.rotation_running:
             messagebox.showerror("Error", "Stop the rotation before editing rules.")
             return
@@ -568,7 +591,12 @@ class RotationEditorTab:
         try:
             # Remove from app's list
             removed_rule = self.app.rotation_rules.pop(index_to_remove)
-            self.app.log_message(f"Removed rule from editor list: {removed_rule}", "DEBUG")
+            self.app.log_message(f"Removed rule {index_to_remove + 1} from editor list: {removed_rule}", "DEBUG")
+
+            # --- Explicitly clear selected index --- 
+            self.selected_rule_index = None
+            # --- End --- 
+
             self.update_rule_listbox()
             self.clear_rule_input_fields()
             self.app._update_button_states() # State might depend on editor list size?
@@ -612,29 +640,53 @@ class RotationEditorTab:
         # Use self.app.rotation_rules
         for i, rule in enumerate(self.app.rotation_rules):
             action = rule.get('action', '?')
-            detail = rule.get('detail', '?')
+            detail_val = rule.get('detail', '?')
             target = rule.get('target', '?')
             condition = rule.get('condition', 'None')
-            cd = rule.get('cooldown', 0.0)
+            cooldown = rule.get('cooldown', 0.0)
             value_x = rule.get('condition_value_x', None)
             value_y = rule.get('condition_value_y', None)
             cond_text = rule.get('condition_text', None)
 
-            if action == "Spell": detail_str = f"ID:{detail}"
-            elif action == "Macro": detail_str = f"Macro:'{str(detail)[:15]}..'" if len(str(detail)) > 15 else f"Macro:'{detail}'"
-            elif action == "Lua": detail_str = f"Lua:'{str(detail)[:15]}..'" if len(str(detail)) > 15 else f"Lua:'{detail}'"
-            else: detail_str = str(detail)
+            # Format conditions for display (simplified)
+            # --- GET the conditions list from the rule FIRST --- 
+            conditions_list = rule.get('conditions', []) # Default to empty list
+            # --- End GET --- 
+            condition_display = "No Condition" # Default
 
-            cond_str = condition
-            if value_x is not None: cond_str = cond_str.replace(" X", f" {value_x}")
-            if value_y is not None: cond_str = cond_str.replace("Y", f"{value_y}")
-            if cond_text is not None:
-                cond_str += f" ({cond_text})"
+            # --- Check NEW format first ---
+            condition_strs = [self._format_condition_for_display(c) for c in conditions_list]
+            if len(condition_strs) > 1:
+                condition_display = condition_strs[0] + " AND ..." # Show first + indicator
+            elif len(condition_strs) == 1:
+                condition_display = condition_strs[0]
+            else:
+                # --- If NEW format empty, check OLD format --- 
+                old_condition = rule.get('condition')
+                if old_condition and old_condition != 'None':
+                    # Reconstruct dict for formatting
+                    old_condition_data = {"condition": old_condition}
+                    if 'condition_value_x' in rule: old_condition_data['value_x'] = rule['condition_value_x']
+                    if 'condition_value_y' in rule: old_condition_data['value_y'] = rule['condition_value_y']
+                    if 'condition_text' in rule: old_condition_data['text'] = rule['condition_text']
+                    condition_display = self._format_condition_for_display(old_condition_data)
+                # If neither format found, it remains "No Condition"
+            # --- End OLD format check ---
 
-            cond_str_display = cond_str if len(cond_str) < 30 else cond_str[:27]+"..."
-            cd_str = f"{cd:.1f}s" if cd > 0 else "-"
-            rule_str = f"{i+1:02d}| {action:<5} ({detail_str:<20}) -> {target:<9} | If: {cond_str_display:<30} | CD:{cd_str:<5}"
-            self.rule_listbox.insert(tk.END, rule_str)
+            # Format Detail
+            if action == "Spell": detail_str = f"ID:{detail_val}"
+            elif action == "Macro": detail_str = f"Macro:'{str(detail_val)[:10]}..'" if len(str(detail_val)) > 10 else f"Macro:'{detail_val}'"
+            elif action == "Lua": detail_str = f"Lua:'{str(detail_val)[:10]}..'" if len(str(detail_val)) > 10 else f"Lua:'{detail_val}'"
+            else: detail_str = str(detail_val)
+
+            # Truncate long details/conditions for display
+            # if isinstance(detail_str, str) and len(detail_str) > 20: detail_str = detail_str[:17] + "..." # Already handled above
+            if len(condition_display) > 30: condition_display = condition_display[:27] + "..."
+
+            cd_str = f"{cooldown:.1f}s" if cooldown > 0 else "-"
+
+            display_text = f"{i+1:02d}| {action:<5} ({detail_str:<20}) -> {target:<9} | If: {condition_display:<30} | CD:{cd_str:<5}"
+            self.rule_listbox.insert(tk.END, display_text)
 
         if 0 <= select_index < len(self.app.rotation_rules):
             self.rule_listbox.selection_set(select_index)
@@ -800,7 +852,7 @@ class RotationEditorTab:
                 except Exception as e:
                      messagebox.showerror("Clipboard Error", f"Could not copy to clipboard:\n{e}", parent=scan_window)
 
-        copy_button = ttk.Button(scan_window, text="Copy Selected Spell ID", command=copy_id)
+        copy_button = ttk.Button(scan_window, text="Use Selected ID", command=copy_id)
         copy_button.pack(pady=5)
 
     def lookup_spell_info(self):
@@ -811,7 +863,7 @@ class RotationEditorTab:
             return
 
         # Use app.root as parent
-        spell_id_str = simpledialog.askstring("Lookup Spell", "Enter Spell ID:", parent=self.app.root)
+        spell_id_str = simpledialog.askstring("Spell ID Lookup", "Enter Spell ID:", parent=self.app.root)
         if not spell_id_str: return
         try:
             spell_id = int(spell_id_str)
@@ -822,29 +874,267 @@ class RotationEditorTab:
 
         info = self.app.game.get_spell_info(spell_id)
         if info:
-            info_lines = [f"Spell ID: {spell_id}"]
-            power_map = {
-                WowObject.POWER_MANA: "Mana", WowObject.POWER_RAGE: "Rage",
-                WowObject.POWER_FOCUS: "Focus", WowObject.POWER_ENERGY: "Energy",
-                WowObject.POWER_RUNIC_POWER: "Runic Power", -1: "N/A"
-            }
-            for key, value in info.items():
-                 if value is not None:
-                      if key == "castTime" and isinstance(value, (int, float)):
-                           value_str = f"{value / 1000.0:.2f}s ({value}ms)" if value > 0 else "Instant"
-                      elif key in ["minRange", "maxRange"] and isinstance(value, (int, float)):
-                           value_str = f"{value:.1f} yd"
-                      elif key == "cost" and isinstance(value, (int, float)):
-                           value_str = f"{value:.0f}"
-                      elif key == "powerType" and isinstance(value, int):
-                           value_str = power_map.get(value, f"Type {value}")
-                      else:
-                           value_str = str(value)
-                      key_str = ''.join(' ' + c if c.isupper() else c for c in key).lstrip().title()
-                      info_lines.append(f"{key_str}: {value_str}")
-
+            info_lines = [f"Spell ID: {spell_id}", f"Name: {info.get('name', 'N/A')}", f"Rank: {info.get('rank', 'N/A')}", f"Cast Time: {info.get('castTime', 0) / 1000.0:.2f}s ({info.get('castTime', 0)}ms)", f"Power Type: {info.get('powerType', 'N/A')}"]
             messagebox.showinfo(f"Spell Info: {info.get('name', spell_id)}", "\n".join(info_lines))
-            self.app.log_message(f"Looked up Spell ID {spell_id}: {info.get('name', 'N/A')}", "DEBUG")
+            self.app.log_message(f"Looked up Spell ID {spell_id}: {info.get('name', 'N/A')}", "INFO")
         else:
-            messagebox.showwarning("Spell Lookup", f"Could not find information for Spell ID {spell_id}.\nCheck DLL logs or if the ID is valid.")
-            self.app.log_message(f"Spell info lookup failed for ID {spell_id}", "WARN") 
+            messagebox.showwarning("Not Found", f"Could not find information for Spell ID {spell_id}.\nCheck DLL logs or if the ID is valid.")
+            self.app.log_message(f"Spell info lookup failed for ID {spell_id}", "WARN")
+
+    # --- Condition Input Management ---
+    def _update_condition_value_inputs_visibility(self, event=None):
+        """Shows/hides Value X, Value Y, or Text input based on selected Condition."""
+        # Get the selected condition
+        try:
+            condition: str = self.condition_var.get()
+        except AttributeError: # Handle case where self.condition_var might not be ready
+            self.app.log_message("Condition variable not ready during visibility update.", "DEBUG")
+            return
+
+        # Define which conditions need which inputs
+        needs_x = any(s in condition for s in ["< X", "> X", ">= X", "% < X", "% > X", "Points >= X", "Distance < X", "Distance > X"])
+        needs_y = "Between X-Y" in condition
+        needs_text = "Aura" in condition # For "Target Has Aura", "Target Missing Aura", etc.
+
+        # Forget all container frames first, checking existence
+        if hasattr(self, 'condition_value_x_frame') and self.condition_value_x_frame:
+            self.condition_value_x_frame.grid_forget()
+        if hasattr(self, 'condition_value_y_frame') and self.condition_value_y_frame:
+            self.condition_value_y_frame.grid_forget()
+        if hasattr(self, 'condition_text_frame') and self.condition_text_frame:
+            self.condition_text_frame.grid_forget()
+
+        # Grid the required container frame(s) inside self.condition_value_frame
+        # Arrange them horizontally using columns in condition_value_frame
+        col_index = 0
+        if needs_x:
+            if hasattr(self, 'condition_value_x_frame') and self.condition_value_x_frame:
+                self.condition_value_x_frame.grid(row=0, column=col_index, sticky=tk.W, padx=(0, 5))
+                col_index += 1
+
+        if needs_y:
+            # Assumes needs_x is also true for Between X-Y
+            if hasattr(self, 'condition_value_y_frame') and self.condition_value_y_frame:
+                self.condition_value_y_frame.grid(row=0, column=col_index, sticky=tk.W, padx=(0, 5))
+                col_index += 1
+
+        if needs_text:
+            if hasattr(self, 'condition_text_frame') and self.condition_text_frame:
+                self.condition_text_frame.grid(row=0, column=col_index, sticky=tk.W, padx=(0, 5))
+                col_index += 1
+
+    def _format_condition_for_display(self, condition_dict: Dict[str, Any]) -> str:
+        """Formats a condition dictionary into a readable string for the listbox (more robust)."""
+        cond_template = condition_dict.get("condition", "Invalid Condition")
+        val_x = condition_dict.get("value_x")
+        val_y = condition_dict.get("value_y")
+        val_text = condition_dict.get("text")
+
+        display_str = cond_template # Start with the template
+
+        # Special case: "Between X-Y" needs both replaced together
+        if "Between X-Y" in display_str:
+            x_disp = "?"
+            y_disp = "?"
+            if val_x is not None:
+                try: x_disp = f"{float(val_x):g}"
+                except (ValueError, TypeError): x_disp = str(val_x)
+            if val_y is not None:
+                try: y_disp = f"{float(val_y):g}"
+                except (ValueError, TypeError): y_disp = str(val_y)
+            display_str = display_str.replace("X-Y", f"{x_disp}-{y_disp}")
+        else:
+            # Replace X placeholder if value exists
+            if " X" in display_str and val_x is not None:
+                try: val_x_disp = f"{float(val_x):g}"
+                except (ValueError, TypeError): val_x_disp = str(val_x)
+                display_str = display_str.replace(" X", f" {val_x_disp}") # Note the space
+
+            # Replace Y placeholder if value exists (shouldn't happen if not Between X-Y, but safe)
+            if " Y" in display_str and val_y is not None:
+                try: val_y_disp = f"{float(val_y):g}"
+                except (ValueError, TypeError): val_y_disp = str(val_y)
+                display_str = display_str.replace(" Y", f" {val_y_disp}")
+
+        # Handle text (Aura Name/ID) - Append if implied by condition type
+        # Assume conditions needing text imply it rather than having a placeholder
+        if "Aura" in cond_template and val_text:
+            display_str += f": {val_text}" # Append the text value
+
+        return display_str
+
+    def _add_condition_to_list(self):
+        """Adds the currently configured condition to the internal list and listbox."""
+        # Add hasattr check for safety
+        if not hasattr(self, 'conditions_listbox') or not self.conditions_listbox or not self.conditions_listbox.winfo_exists():
+            self.app.log_message("Conditions listbox not ready.", "ERROR")
+            return
+
+        condition = self.condition_var.get()
+        if not condition or condition == "None":
+            messagebox.showwarning("No Condition", "Please select a valid condition to add.")
+            return
+
+        new_condition_data: Dict[str, Any] = {"condition": condition}
+
+        # Define which conditions need which inputs (copied)
+        needs_x = any(s in condition for s in ["< X", "> X", ">= X", "% < X", "% > X", "Points >= X", "Distance < X", "Distance > X"])
+        needs_y = "Between X-Y" in condition
+        needs_text = "Aura" in condition
+
+        try:
+            if needs_x:
+                value_x_str = self.condition_value_x_var.get()
+                if not value_x_str: raise ValueError("Value (X) cannot be empty.")
+                # Attempt to convert to float, might need int for some conditions later
+                new_condition_data["value_x"] = float(value_x_str)
+            if needs_y:
+                value_y_str = self.condition_value_y_var.get()
+                if not value_y_str: raise ValueError("Value (Y) cannot be empty.")
+                new_condition_data["value_y"] = float(value_y_str)
+            if needs_text:
+                value_text = self.condition_text_var.get()
+                if not value_text.strip(): raise ValueError("Name/ID cannot be empty.")
+                new_condition_data["text"] = value_text.strip()
+        except ValueError as e:
+            messagebox.showerror("Invalid Input", f"Error adding condition: {e}")
+            return
+
+        # Add to internal list (associated with the rule being edited)
+        self._current_rule_conditions.append(new_condition_data)
+
+        # Add formatted string to the dedicated conditions listbox
+        display_str = self._format_condition_for_display(new_condition_data)
+        self.conditions_listbox.insert(tk.END, display_str)
+
+    def _update_rule_listbox_display(self):
+        """Updates the main listbox displaying the rules from app.rotation_rules."""
+        if not self.rule_listbox: return
+
+        # Store current selection to restore it later
+        current_selection_index = self.selected_rule_index # Use our tracker
+
+        self.rule_listbox.delete(0, tk.END)
+        for i, rule in enumerate(self.app.rotation_rules):
+            action = rule.get("action", "?")
+            detail_val = rule.get("detail", "?")
+            target = rule.get("target", "?")
+            conditions = rule.get("conditions", []) # Get list
+            cooldown = rule.get('cooldown', 0.0)
+
+            # Format conditions for display (simplified)
+            # --- GET the conditions list from the rule FIRST --- 
+            conditions_list = rule.get('conditions', []) # Default to empty list
+            # --- End GET --- 
+            condition_display = "No Condition" # Default
+
+            # --- Check NEW format first ---
+            condition_strs = [self._format_condition_for_display(c) for c in conditions_list]
+            if len(condition_strs) > 1:
+                condition_display = condition_strs[0] + " AND ..." # Show first + indicator
+            elif len(condition_strs) == 1:
+                condition_display = condition_strs[0]
+            else:
+                # --- If NEW format empty, check OLD format --- 
+                old_condition = rule.get('condition')
+                if old_condition and old_condition != 'None':
+                    # Reconstruct dict for formatting
+                    old_condition_data = {"condition": old_condition}
+                    if 'condition_value_x' in rule: old_condition_data['value_x'] = rule['condition_value_x']
+                    if 'condition_value_y' in rule: old_condition_data['value_y'] = rule['condition_value_y']
+                    if 'condition_text' in rule: old_condition_data['text'] = rule['condition_text']
+                    condition_display = self._format_condition_for_display(old_condition_data)
+                # If neither format found, it remains "No Condition"
+            # --- End OLD format check ---
+
+            # Format Detail
+            if action == "Spell": detail_str = f"ID:{detail_val}"
+            elif action == "Macro": detail_str = f"Macro:'{str(detail_val)[:10]}..'" if len(str(detail_val)) > 10 else f"Macro:'{detail_val}'"
+            elif action == "Lua": detail_str = f"Lua:'{str(detail_val)[:10]}..'" if len(str(detail_val)) > 10 else f"Lua:'{detail_val}'"
+            else: detail_str = str(detail_val)
+
+            # Truncate long details/conditions for display
+            # if isinstance(detail_str, str) and len(detail_str) > 20: detail_str = detail_str[:17] + "..." # Already handled above
+            if len(condition_display) > 30: condition_display = condition_display[:27] + "..."
+
+            cd_str = f"{cooldown:.1f}s" if cooldown > 0 else "-"
+
+            display_text = f"{i+1:02d}| {action:<5} ({detail_str:<20}) -> {target:<9} | If: {condition_display:<30} | CD:{cd_str:<5}"
+            self.rule_listbox.insert(tk.END, display_text)
+
+        # Restore selection if possible
+        if current_selection_index is not None:
+            try:
+                if 0 <= current_selection_index < self.rule_listbox.size():
+                    self.rule_listbox.selection_set(current_selection_index)
+                    self.rule_listbox.activate(current_selection_index)
+                    self.rule_listbox.see(current_selection_index)
+                    # Ensure internal index is still correct
+                    self.selected_rule_index = current_selection_index
+                else:
+                     self.selected_rule_index = None # Selection index no longer valid
+                     if self.update_selected_rule_button: self.update_selected_rule_button.config(state=tk.DISABLED)
+            except (IndexError, tk.TclError):
+                 self.selected_rule_index = None # Clear selection if error
+                 if self.update_selected_rule_button: self.update_selected_rule_button.config(state=tk.DISABLED)
+        else:
+             # Ensure update button is disabled if nothing was selected
+             if self.update_selected_rule_button: self.update_selected_rule_button.config(state=tk.DISABLED)
+
+    # --- Event Handlers ---
+    def _handle_listbox_click(self, event):
+        """Handles left-click release in the rule listbox to allow deselection."""
+        if not self.rule_listbox:
+            return
+
+        # Use nearest and bbox to check if click was outside items
+        clicked_index = self.rule_listbox.nearest(event.y)
+        item_bbox = self.rule_listbox.bbox(clicked_index)
+
+        clicked_outside = False
+        if item_bbox is None:
+            # Clicked in a completely empty listbox
+            clicked_outside = True
+        else:
+            # Check if the y-coordinate is outside the item's bounding box
+            item_y, item_height = item_bbox[1], item_bbox[3]
+            if not (item_y <= event.y < item_y + item_height):
+                clicked_outside = True
+
+        if clicked_outside:
+            current_selection = self.rule_listbox.curselection()
+            if current_selection: # Only clear if something was selected
+                self.app.log_message("Listbox click in empty space (using nearest/bbox), clearing selection.", "DEBUG")
+                self.rule_listbox.selection_clear(0, tk.END)
+                # Trigger the same actions as clearing selection normally
+                self.on_rule_select() # Call this to clear inputs and button state
+
+    # Note: _power_type_to_string removed as logic incorporated directly in _lookup_spell_info
+
+    # Note: _power_type_to_string removed as logic incorporated directly in _lookup_spell_info 
+
+    def _remove_selected_condition(self):
+        """Removes the selected condition from the internal list and the conditions_listbox."""
+        if not hasattr(self, 'conditions_listbox') or not self.conditions_listbox:
+            self.app.log_message("Cannot remove condition: Conditions listbox not ready.", "ERROR")
+            return
+
+        selected_indices = self.conditions_listbox.curselection()
+        if not selected_indices:
+            messagebox.showwarning("Selection Error", "Select a condition to remove from the 'Current Rule Conditions' list.")
+            return
+
+        index_to_remove = selected_indices[0]
+
+        try:
+            # Remove from the internal list first
+            removed_condition = self._current_rule_conditions.pop(index_to_remove)
+            # Remove from the listbox display
+            self.conditions_listbox.delete(index_to_remove)
+            self.app.log_message(f"Removed condition: {removed_condition}", "DEBUG")
+        except IndexError:
+            self.app.log_message(f"Error removing condition: Index {index_to_remove} out of range for internal list.", "ERROR")
+        except Exception as e:
+            self.app.log_message(f"Error removing condition: {e}", "ERROR")
+
+    # Note: _power_type_to_string removed as logic incorporated directly in _lookup_spell_info 

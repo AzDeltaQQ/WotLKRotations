@@ -1,6 +1,8 @@
 import offsets # Import offsets globally for constants
 import time
 import logging
+import sys
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +64,7 @@ class WowObject:
     UNIT_FLAG_MOUNT = 0x08000000                   # Unit is mounted
     UNIT_FLAG_SHEATHE = 0x40000000                 # Unit weapons are sheathed
 
+    UNIT_FIELD_TARGET_GUID = 0x1C * 4
 
     def __init__(self, base_address: int, mem_handler, local_player_guid: int = 0):
         self.base_address = base_address
@@ -282,8 +285,6 @@ class WowObject:
     @property
     def is_channeling(self) -> bool:
         return self.channeling_spell_id != 0
-
-    # --- End Property helpers ---
 
     def get_name(self) -> str:
         """Returns the object's name. Relies on ObjectManager to set it."""

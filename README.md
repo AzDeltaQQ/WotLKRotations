@@ -158,4 +158,84 @@ This project uses a two-part architecture:
     *   `sv-ttk` (`pip install sv-ttk`) # For the GUI theme
     *   A C++ compiler supporting C++17 (e.g., Visual Studio with CMake integration).
     *   CMake.
+    *   Detours library (submoduled or placed in a known location for CMake).
+
+### Rotation Editor Tab
+
+The Rotation Editor allows you to define sequences of actions (casting spells, using macros, running Lua) based on specific conditions. Rules are evaluated top-down, and the first rule whose conditions are met will have its action executed.
+
+#### Multiple Conditions per Rule
+*   **AND Logic:** You can now add multiple conditions to a single rule. The rule will only execute if *all* of its conditions evaluate to true.
+*   **GUI:** Use the 'Condition' dropdown, value fields, and the 'Add Cond.' button to build up a list of conditions for the currently selected or new rule. These appear in the 'Current Rule Conditions' listbox. Use 'Remove Cond.' to remove a selected condition from this temporary list before adding/updating the rule.
+
+#### Rule Structure (JSON Format)
+
+Rules are saved in JSON format (e.g., in the `Rules/` directory). Here's an example structure:
+
+```json
+[
+  {
+    "action": "Spell", 
+    "detail": 2098,      # Spell ID (e.g., Eviscerate)
+    "target": "target", 
+    "conditions": [     # List of conditions (AND logic)
+      {
+        "condition": "Player Energy >= X",
+        "value_x": 35.0
+      },
+      {
+        "condition": "Player Combo Points >= X",
+        "value_x": 3.0
+      }
+    ],
+    "cooldown": 0.0       # Internal cooldown (seconds) for this specific rule line
+  },
+  {
+    "action": "Spell",
+    "detail": 1752,      # Spell ID (e.g., Sinister Strike)
+    "target": "target",
+    "conditions": [     # Can have single or no conditions
+      {
+        "condition": "Player Energy >= X",
+        "value_x": 45.0
+      }
+    ],
+    "cooldown": 0.0
+  }
+  // ... more rules
+]
+```
+
+*   **action**: Type of action ("Spell", "Macro", "Lua").
+*   **detail**: Spell ID, Macro Text, or Lua code string.
+*   **target**: Target unit ("target", "player", "focus", "pet", etc.).
+*   **conditions**: A list of condition objects. The rule executes only if all conditions in the list are true.
+    *   **condition**: The condition string (e.g., "Player Energy >= X").
+    *   **value_x**, **value_y**, **text**: Optional values used by the specific condition string.
+*   **cooldown**: An optional internal cooldown (in seconds) applied *only* to this specific rule line after it executes successfully. This is separate from the spell's actual game cooldown.
+
+### Lua Runner Tab
+
+The Lua Runner tab allows you to execute arbitrary Lua code directly from the GUI. This is useful for testing Lua scripts or running custom Lua code without needing to create a rule.
+
+*   **Lua Code Input:** Enter the Lua code you want to execute in the text area.
+*   **Execute:** Click the 'Execute' button to run the Lua code.
+*   **Output:** The result of the Lua execution will be displayed in the output area below the text area.
+
+## Setup:
+
+1.  Ensure Python 3 is installed.
+2.  Install required library: `pip install pymem`
+3.  Ensure WoW 3.3.5a (client build 12340) is running.
+4.  Run the GUI: `python gui.py`
+
+## Setup
+
+1.  **Requirements:**
+    *   Python 3.x
+    *   `pywin32` (`pip install pywin32`)
+    *   `psutil` (`pip install psutil`)
+    *   `sv-ttk` (`pip install sv-ttk`) # For the GUI theme
+    *   A C++ compiler supporting C++17 (e.g., Visual Studio with CMake integration).
+    *   CMake.
     *   Detours library (submoduled or placed in a known location for CMake). 
