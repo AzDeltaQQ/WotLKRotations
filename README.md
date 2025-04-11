@@ -45,7 +45,14 @@ This project uses a two-part architecture:
     *   GUI editor (`Rotation Editor` tab) to define prioritized rules.
     *   Available Actions: `Spell`, `Macro` (not implemented), `Lua`.
     *   Available Targets: `target`, `player`, `focus`, `pet`, `mouseover`.
-    *   Available Conditions: `None`, `Target Exists`, `Target Attackable`, `Player Is Casting`, `Target Is Casting`, `Player Is Moving`, `Player Is Stealthed`, `Is Spell Ready` (Placeholder), `Target HP % < X`, `Player HP % < X`, `Player Rage >= X`, `Player Energy >= X`, `Player Mana % < X`, `Player Combo Points >= X`, `Target Distance < X`, `Target Has Aura` (Placeholder), `Player Has Aura` (Placeholder).
+    *   Available Conditions: 
+        *   Simple: `None`, `Target Exists`, `Target Attackable` (basic), `Player Is Casting`, `Target Is Casting`, `Player Is Moving`, `Player Is Stealthed`.
+        *   Health/Resource: `Target HP % < X`, `Player HP % < X`, `Player Rage >= X`, `Player Energy >= X`, `Player Mana % < X`, `Player Combo Points >= X` (Requires `Condition Value (X)` input in editor).
+        *   Distance: `Target Distance < X`.
+        *   Placeholders: `Is Spell Ready`, `Target Has Aura`, `Player Has Aura`.
+    *   Condition checks happen *before* cooldown checks for efficiency.
+    *   Rules targeting "target" automatically check if a target exists before proceeding.
+    *   GUI supports inputting the `X` value for relevant conditions.
     *   Save/Load rules to/from `.json` files in the `Rules/` directory.
     *   Activate rules from editor or loaded files via the `Rotation Control / Test` tab.
 *   **GUI Controls:** Test buttons for key DLL functions.
@@ -106,8 +113,14 @@ This project uses a two-part architecture:
 ## Development Notes & Known Issues
 
 *   Offsets are specific to WoW 3.3.5a (12340).
-*   Recent Fixes: Addressed issues with target checking via pipe vs direct memory, button state updates after loading rules, `AttributeError`s in GUI/rotation logic, and removed false GCD lockout after `CastSpellByID` calls.
-*   Rotation engine condition checking is still basic; Aura/SpellReady/etc. checks are placeholders.
+*   **Recent Fixes:** 
+    *   Implemented resource conditions (e.g., `Player Energy >= X`) with GUI input.
+    *   Fixed rotation engine logic to check conditions *before* cooldowns.
+    *   Added check to ensure a target exists for rules specifying "target".
+    *   Resolved various `AttributeError`s during GUI/rotation initialization.
+    *   Corrected GCD handling after spell casts.
+    *   Improved IPC/DLL stability for cooldown/casting.
+*   Rotation engine condition checking for Auras, Spell Readiness, etc., are still placeholders and need implementation (likely via Lua/DLL).
 *   The `is_attackable` check logic may need refinement based on specific unit flags.
 *   Macro execution via rules is not implemented.
 

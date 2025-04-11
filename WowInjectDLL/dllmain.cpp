@@ -52,7 +52,7 @@ HANDLE g_hPipe = INVALID_HANDLE_VALUE; // Handle for the named pipe
 HANDLE g_hIPCThread = nullptr;      // Handle for the IPC thread
 volatile bool g_bShutdown = false;   // Flag to signal shutdown
 
-// --- WoW Function Definitions & Pointers (Consolidated) --- 
+// --- WoW Function Definitions & Pointers (Consolidated) ---
 
 // --- Addresses (#define) ---
 // WoW Specific / Modified
@@ -75,7 +75,7 @@ volatile bool g_bShutdown = false;   // Flag to signal shutdown
 #define LUA_ISSTRING_ADDR    0x0084DF60 // FrameScript_IsString (UPDATED from user list)
 #define LUA_GETTOP_ADDR      0x0084DBD0 // FrameScript_GetTop
 #define LUA_ISNUMBER_ADDR    0x0084DF20 // FrameScript_IsNumber
-#define LUA_TYPE_ADDR        0x0084DEB0 // lua_type 
+#define LUA_TYPE_ADDR        0x0084DEB0 // lua_type
 #define LUA_LOADBUFFER_ADDR  0x0084F860 // FrameScript_Load (luaL_loadbuffer)
 #define LUA_GETFIELD_ADDR    0x0084E590 // WoW's lua_getfield implementation (Added based on user enum list)
 
@@ -121,15 +121,15 @@ lua_Execute_t lua_Execute = (lua_Execute_t)WOW_LUA_EXECUTE;
 lua_pcall_t lua_pcall = (lua_pcall_t)LUA_PCALL_ADDR;
 lua_tonumber_t lua_tonumber = (lua_tonumber_t)LUA_TONUMBER_ADDR;
 lua_settop_t lua_settop = (lua_settop_t)LUA_SETTOP_ADDR;
-lua_gettop_t lua_gettop = (lua_gettop_t)LUA_GETTOP_ADDR; 
+lua_gettop_t lua_gettop = (lua_gettop_t)LUA_GETTOP_ADDR;
 lua_tolstring_t lua_tolstring = (lua_tolstring_t)LUA_TOLSTRING_ADDR;
 lua_pushstring_t lua_pushstring = (lua_pushstring_t)LUA_PUSHSTRING_ADDR;
 lua_pushinteger_t lua_pushinteger = (lua_pushinteger_t)LUA_PUSHINTEGER_ADDR;
 lua_tointeger_t lua_tointeger = (lua_tointeger_t)LUA_TOINTEGER_ADDR;
 lua_toboolean_t lua_toboolean = (lua_toboolean_t)LUA_TOBOOLEAN_ADDR;
 lua_isnumber_t lua_isnumber = (lua_isnumber_t)LUA_ISNUMBER_ADDR;
-lua_isstring_t lua_isstring = (lua_isstring_t)LUA_ISSTRING_ADDR; 
-lua_type_t lua_type = (lua_type_t)LUA_TYPE_ADDR; 
+lua_isstring_t lua_isstring = (lua_isstring_t)LUA_ISSTRING_ADDR;
+lua_type_t lua_type = (lua_type_t)LUA_TYPE_ADDR;
 lua_loadbuffer_t lua_loadbuffer = (lua_loadbuffer_t)LUA_LOADBUFFER_ADDR;
 lua_pushnil_t lua_pushnil = (lua_pushnil_t)LUA_PUSHNIL_ADDR;
 lua_getfield_t lua_getfield = (lua_getfield_t)LUA_GETFIELD_ADDR;
@@ -155,26 +155,26 @@ lua_State* GetLuaState() {
 }
 
 
-// --- Offsets & Constants --- 
+// --- Offsets & Constants ---
 #define D3D_PTR_1 0x00C5DF88
 #define D3D_PTR_2 0x397C
-#define D3D_ENDSCENE_VTABLE_OFFSET 0xA8 
+#define D3D_ENDSCENE_VTABLE_OFFSET 0xA8
 
 #define LUA_GLOBALSINDEX -10002 // WoW's index for the global table (_G)
 
-// --- Forward Declarations (Internal) --- 
+// --- Forward Declarations (Internal) ---
 void SetupHook();
 void RemoveHook();
-DWORD WINAPI IPCThread(LPVOID lpParam); 
-void HandleIPCCommand(const std::string& command); 
+DWORD WINAPI IPCThread(LPVOID lpParam);
+void HandleIPCCommand(const std::string& command);
 
-// --- Hooked Function --- 
+// --- Hooked Function ---
 HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
     if (g_bShutdown) {
         return oEndScene(pDevice); // Pass through if shutting down
     }
 
-    // --- Process Queued Requests (Main Thread Execution Context) --- 
+    // --- Process Queued Requests (Main Thread Execution Context) ---
     std::vector<Request> requestsToProcess;
     {
         std::lock_guard<std::mutex> lock(g_queueMutex); // Lock queues
@@ -199,7 +199,7 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
             // Check Lua state validity only if needed by *other* commands
             bool need_lua = (req.type == REQ_EXEC_LUA || req.type == REQ_GET_TIME_MS ||
                              req.type == REQ_GET_CD || req.type == REQ_IS_IN_RANGE ||
-                             req.type == REQ_GET_SPELL_INFO); 
+                             req.type == REQ_GET_SPELL_INFO);
             bool need_cast_func = (req.type == REQ_CAST_SPELL);
 
             if (need_lua && !L) {
@@ -213,7 +213,7 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                 else response_str = "ERROR:Lua state null";
             } else if (need_cast_func && !CastLocalPlayerSpell) {
                  OutputDebugStringA("[WoWInjectDLL] hkEndScene: ERROR - CastLocalPlayerSpell function pointer is NULL!\n");
-                 response_str = "CAST_ERR:func null";
+                 response_str = "CAST_RESULT:ERROR:func null"; // Match prefix
             } else {
                 // Process request if Lua state is valid (or not needed) or cast func is valid
                 switch (req.type) {
@@ -226,7 +226,7 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                         // Ensure required function pointers are valid
                         if (L && lua_loadbuffer && lua_pcall && lua_gettop && lua_tolstring && lua_settop && lua_type && lua_isstring && !req.data.empty()) {
                             try {
-                                sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] hkEndScene: Executing Lua: [%.100s]...\n", req.data.c_str()); 
+                                sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] hkEndScene: Executing Lua: [%.100s]...\n", req.data.c_str());
                                 OutputDebugStringA(log_buffer);
 
                                 int top_before_load = lua_gettop(L);
@@ -336,13 +336,13 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                     case REQ_GET_TIME: // Keep old case for potential compatibility, but treat as MS
                     case REQ_GET_TIME_MS:
                         // Ensure required function pointers are valid
-                        if (L && lua_loadbuffer && lua_pcall && lua_gettop && lua_isnumber && lua_tonumber && lua_settop) { 
+                        if (L && lua_loadbuffer && lua_pcall && lua_gettop && lua_isnumber && lua_tonumber && lua_settop) {
                             try {
                                 OutputDebugStringA("[WoWInjectDLL] hkEndScene: Processing REQ_GET_TIME_MS.\n");
                                 int top_before = lua_gettop(L);
                                 const char* luaCode = "local t = GetTime(); print('[DLL] GetTime() returned type:', type(t)); return t";
                                 int load_status = lua_loadbuffer(L, luaCode, strlen(luaCode), "WowInjectDLL_GetTime");
-                                
+
                                 if (load_status == 0 && lua_gettop(L) > top_before) {
                                     if (lua_pcall(L, 0, 1, 0) == 0) { // Call GetTime(), 0 args, 1 result
                                         int result_type_c = lua_type ? lua_type(L, -1) : -1;
@@ -355,7 +355,7 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                                             lua_settop(L, top_before); // Pop result (restore stack)
 
                                             char time_buf[64];
-                                            sprintf_s(time_buf, sizeof(time_buf), "TIME:%lld", game_time_ms); 
+                                            sprintf_s(time_buf, sizeof(time_buf), "TIME:%lld", game_time_ms);
                                             response_str = time_buf;
                                         } else {
                                             OutputDebugStringA("[WoWInjectDLL] GetTime: pcall result was not a number! Check game chat/logs for type.\n");
@@ -384,11 +384,11 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                             OutputDebugStringA("[WoWInjectDLL] hkEndScene: ERROR - Lua state or required Lua functions null for GetTime!\n");
                             response_str = "ERROR:Lua state/funcs null";
                         }
-                        break; 
+                        break;
 
                     case REQ_GET_CD:
                         // Ensure required function pointers are valid
-                        if (L && lua_loadbuffer && lua_pushinteger && lua_pcall && lua_gettop && lua_isnumber && lua_tonumber && lua_tointeger && lua_settop && lua_tolstring) { 
+                        if (L && lua_loadbuffer && lua_pushinteger && lua_pcall && lua_gettop && lua_isnumber && lua_tonumber && lua_tointeger && lua_settop && lua_tolstring) {
                             try {
                                 sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] hkEndScene: Processing REQ_GET_CD for spell %d.\n", req.spell_id);
                                 OutputDebugStringA(log_buffer);
@@ -399,25 +399,25 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                                 int load_status = lua_loadbuffer(L, luaCode, strlen(luaCode), "WowInjectDLL_GetCD");
 
                                 if (load_status == 0 && lua_gettop(L) > top_before) {
-                                    lua_pushinteger(L, req.spell_id); 
+                                    lua_pushinteger(L, req.spell_id);
 
-                                    if (lua_pcall(L, 1, 3, 0) == 0) { 
-                                        if (lua_isnumber(L, -3) && lua_isnumber(L, -2) && lua_isnumber(L, -1)) { 
+                                    if (lua_pcall(L, 1, 3, 0) == 0) {
+                                        if (lua_isnumber(L, -3) && lua_isnumber(L, -2) && lua_isnumber(L, -1)) {
                                             double start_sec = lua_tonumber(L, -3);
                                             double duration_sec = lua_tonumber(L, -2);
-                                            int enabled = lua_tointeger(L, -1); 
+                                            int enabled = lua_tointeger(L, -1);
 
                                             long long start_ms = static_cast<long long>(start_sec * 1000.0);
                                             long long duration_ms = static_cast<long long>(duration_sec * 1000.0);
 
-                                            lua_settop(L, top_before); 
+                                            lua_settop(L, top_before);
 
                                             char cd_buf[128];
                                             sprintf_s(cd_buf, sizeof(cd_buf), "CD:%lld,%lld,%d", start_ms, duration_ms, enabled);
                                             response_str = cd_buf;
                                         } else {
                                             OutputDebugStringA("[WoWInjectDLL] GetSpellCooldown: pcall result types invalid (expected num, num, num).\n");
-                                            lua_settop(L, top_before); 
+                                            lua_settop(L, top_before);
                                             response_str = "ERROR:GetSpellCooldown result types invalid";
                                         }
                                     } else {
@@ -425,27 +425,27 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                                         char err_buf[256];
                                         sprintf_s(err_buf, sizeof(err_buf), "[WoWInjectDLL] GetCD: lua_pcall failed! Error: %s\n", errorMsg ? errorMsg : "Unknown Lua error");
                                         OutputDebugStringA(err_buf);
-                                        lua_settop(L, top_before); 
-                                        response_str = "ERROR:pcall failed"; 
+                                        lua_settop(L, top_before);
+                                        response_str = "ERROR:pcall failed";
                                     }
                                 } else {
                                     sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] GetCD: lua_loadbuffer failed with status %d.\n", load_status);
                                     OutputDebugStringA(log_buffer);
                                     response_str = "ERROR:loadbuffer failed";
-                                    lua_settop(L, top_before); 
+                                    lua_settop(L, top_before);
                                 }
 
                             } catch (const std::exception& e) {
                                 std::string errorMsg = "[WoWInjectDLL] ERROR in GetCD processing (exception): ";
                                 errorMsg += e.what();
-                                errorMsg += "\n"; 
+                                errorMsg += "\n";
                                 OutputDebugStringA(errorMsg.c_str());
                                 response_str = "CD_ERR:crash";
-                                if (L && lua_settop) lua_settop(L, 0); 
+                                if (L && lua_settop) lua_settop(L, 0);
                             } catch (...) {
                                 OutputDebugStringA("[WoWInjectDLL] CRITICAL ERROR in GetCD processing: Memory access violation.\n");
                                 response_str = "CD_ERR:crash";
-                                if (L && lua_settop) lua_settop(L, 0); 
+                                if (L && lua_settop) lua_settop(L, 0);
                             }
                         } else {
                             OutputDebugStringA("[WoWInjectDLL] hkEndScene: ERROR - Lua state or required Lua functions null for GetCD!\n");
@@ -455,7 +455,7 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
 
                     case REQ_IS_IN_RANGE:
                         // Ensure required function pointers are valid
-                        if (L && lua_loadbuffer && lua_pushinteger && lua_pushstring && lua_pcall && lua_gettop && lua_isnumber && lua_tointeger && lua_settop && lua_type && lua_tolstring && lua_GetSpellInfo && lua_pushnil) { 
+                        if (L && lua_loadbuffer && lua_pushinteger && lua_pushstring && lua_pcall && lua_gettop && lua_isnumber && lua_tointeger && lua_settop && lua_type && lua_tolstring && lua_GetSpellInfo && lua_pushnil) {
                             try {
                                 sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] hkEndScene: Processing REQ_IS_IN_RANGE for spell ID %d, unit '%s'.\n", req.spell_id, req.unit_id.c_str());
                                 OutputDebugStringA(log_buffer);
@@ -466,10 +466,10 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                                 // Get spell name using lua_GetSpellInfo C function
                                 if (lua_GetSpellInfo) {
                                     lua_pushinteger(L, req.spell_id);
-                                    int num_results_get_info = lua_GetSpellInfo(L); 
+                                    int num_results_get_info = lua_GetSpellInfo(L);
                                     // Name is expected at index 2 relative to stack base BEFORE the call + 1 (for the argument)
                                     // So, relative index is (top_before + 1) + 1 = top_before + 2
-                                    if (num_results_get_info >= 1 && lua_type(L, top_before + 2) == 4) { 
+                                    if (num_results_get_info >= 1 && lua_type(L, top_before + 2) == 4) {
                                         spellName = lua_tolstring(L, top_before + 2, NULL);
                                     } else {
                                          sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] lua_GetSpellInfo did not return a string name at index 2 (Type=%d)\n", lua_type(L, top_before + 2));
@@ -486,15 +486,15 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                                     const char* luaCode = "local sName, uId = ...; return IsSpellInRange(sName, uId)";
                                     int load_status = lua_loadbuffer(L, luaCode, strlen(luaCode), "WowInjectDLL_RangeWithName");
                                     if (load_status == 0 && lua_gettop(L) > top_before) {
-                                        lua_pushstring(L, spellName);           
-                                        lua_pushstring(L, req.unit_id.c_str()); 
+                                        lua_pushstring(L, spellName);
+                                        lua_pushstring(L, req.unit_id.c_str());
                                         if (lua_pcall(L, 2, 1, 0) == 0) {
                                             int result = -1;
                                             int result_type = lua_type(L, -1);
                                             if (result_type == 3) { // Number
-                                                result = lua_tointeger(L, -1); 
+                                                result = lua_tointeger(L, -1);
                                             } else if (result_type == 0) { // Nil
-                                                OutputDebugStringA("[WoWInjectDLL] IsSpellInRange returned nil. Likely invalid spell/unit/visibility.\n"); 
+                                                OutputDebugStringA("[WoWInjectDLL] IsSpellInRange returned nil. Likely invalid spell/unit/visibility.\n");
                                                 result = 0; // Treat nil as false (0) for range check
                                             } else if (result_type == 1) { // Boolean (True=1, False=0)
                                                 result = lua_toboolean(L, -1);
@@ -503,27 +503,27 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                                             } else { // Unexpected type
                                                  sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] IsSpellInRange returned unexpected type: %d\n", result_type);
                                                  OutputDebugStringA(log_buffer);
-                                                 result = -1; // Indicate error 
+                                                 result = -1; // Indicate error
                                             }
                                             lua_settop(L, top_before);
                                             char range_buf[64];
                                             sprintf_s(range_buf, sizeof(range_buf), "IN_RANGE:%d", result);
                                             response_str = range_buf;
-                                        } else { 
+                                        } else {
                                             const char* errorMsg = lua_tolstring ? lua_tolstring(L, -1, NULL) : "(tolstring NULL)";
                                             sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] IsInRange: pcall failed! Error: %s\n", errorMsg ? errorMsg : "Unknown Lua error");
                                             OutputDebugStringA(log_buffer);
                                             lua_settop(L, top_before);
                                             response_str = "RANGE_ERR:pcall failed";
                                         }
-                                    } else { 
+                                    } else {
                                         sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] IsInRange: loadbuffer failed with status %d.\n", load_status);
                                         OutputDebugStringA(log_buffer);
                                         response_str = "RANGE_ERR:loadbuffer failed";
                                         lua_settop(L, top_before);
                                     }
 
-                                } else { 
+                                } else {
                                     sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] IsInRange: Failed to get spell name for ID %d.\n", req.spell_id);
                                     OutputDebugStringA(log_buffer);
                                     response_str = "RANGE_ERR:GetSpellInfo failed";
@@ -555,9 +555,9 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
 
                                 int top_before = lua_gettop(L);
                                 lua_pushinteger(L, req.spell_id);
-                                int num_results = lua_GetSpellInfo(L); 
+                                int num_results = lua_GetSpellInfo(L);
 
-                                if (num_results > 0) { 
+                                if (num_results > 0) {
                                      // Indices relative to stack top AFTER GetSpellInfo call (which is top_before + num_results)
                                     // Name = index 2 => top_before + 2
                                     // Rank = index 3 => top_before + 3
@@ -567,17 +567,17 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                                     // CastTime = index 8 => top_before + 8
                                     // MinRange = index 9 => top_before + 9
                                     // MaxRange = index 10 ? (Needs verification if it's returned)
-                                    
+
                                     // Check if we got at least 9 results
-                                    if (num_results >= 9) { 
+                                    if (num_results >= 9) {
                                         const char* name = (lua_type(L, top_before + 2) == 4) ? lua_tolstring(L, top_before + 2, NULL) : "N/A";
                                         const char* rank = (lua_type(L, top_before + 3) == 4) ? lua_tolstring(L, top_before + 3, NULL) : "N/A";
                                         const char* icon = (lua_type(L, top_before + 4) == 4) ? lua_tolstring(L, top_before + 4, NULL) : "N/A";
-                                        double cost = lua_isnumber(L, top_before + 5) ? lua_tonumber(L, top_before + 5) : 0.0;       
-                                        int powerType = lua_isnumber(L, top_before + 7) ? lua_tointeger(L, top_before + 7) : -1; 
-                                        double castTime = lua_isnumber(L, top_before + 8) ? lua_tonumber(L, top_before + 8) : -1.0; 
-                                        double minRange = lua_isnumber(L, top_before + 9) ? lua_tonumber(L, top_before + 9) : -1.0; 
-                                        
+                                        double cost = lua_isnumber(L, top_before + 5) ? lua_tonumber(L, top_before + 5) : 0.0;
+                                        int powerType = lua_isnumber(L, top_before + 7) ? lua_tointeger(L, top_before + 7) : -1;
+                                        double castTime = lua_isnumber(L, top_before + 8) ? lua_tonumber(L, top_before + 8) : -1.0;
+                                        double minRange = lua_isnumber(L, top_before + 9) ? lua_tonumber(L, top_before + 9) : -1.0;
+
                                         // Attempt to read potential maxRange at index 10
                                         double maxRange = -1.0;
                                         if (num_results >= 10 && lua_isnumber(L, top_before + 10)) {
@@ -645,7 +645,7 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                                 // Send simple confirmation response
                                 char cast_resp_buf[64];
                                 // Corrected format: Should be CAST_RESULT based on Python expectation
-                                sprintf_s(cast_resp_buf, sizeof(cast_resp_buf), "CAST_RESULT:%d,%d", req.spell_id, (int)result); 
+                                sprintf_s(cast_resp_buf, sizeof(cast_resp_buf), "CAST_RESULT:%d,%d", req.spell_id, (int)result);
                                 response_str = cast_resp_buf;
 
                             } catch (const std::exception& e) {
@@ -669,10 +669,10 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                             // Directly read the byte from the static address
                             unsigned char comboPoints = *(reinterpret_cast<unsigned char*>(COMBO_POINTS_ADDR));
 
-                            if (comboPoints > 5) { 
+                            if (comboPoints > 5) {
                                 sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Warning: Read combo point value %u, which is > 5. Assuming 0.\n", comboPoints);
                                 OutputDebugStringA(log_buffer);
-                                comboPoints = 0; 
+                                comboPoints = 0;
                             }
 
                             char cp_buf[64];
@@ -683,10 +683,10 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                             std::string errorMsg = "[WoWInjectDLL] ERROR reading combo point memory (exception): ";
                             errorMsg += e.what(); errorMsg += "\n";
                             OutputDebugStringA(errorMsg.c_str());
-                            response_str = "CP:-98"; 
+                            response_str = "CP:-98";
                         } catch (...) {
                             OutputDebugStringA("[WoWInjectDLL] CRITICAL ERROR reading combo point memory: Access violation.\n");
-                            response_str = "CP:-99"; 
+                            response_str = "CP:-99";
                         }
                         break;
 
@@ -697,7 +697,7 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                             uintptr_t objectManagerPtr = *(uintptr_t*)0x00C79CE0;
                             if (objectManagerPtr) {
                                 // Read TargetGUID from offset 0x74 relative to the ObjectManager base pointer
-                                uint64_t targetGUID = *(uint64_t*)(objectManagerPtr + 0x74); 
+                                uint64_t targetGUID = *(uint64_t*)(objectManagerPtr + 0x74);
                                 char guid_buf[64];
                                 sprintf_s(guid_buf, sizeof(guid_buf), "TARGET_GUID:0x%llX", targetGUID);
                                 response_str = guid_buf;
@@ -734,27 +734,27 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
         } // End loop through requests
     }
 
-    // --- Other per-frame logic (e.g., ImGui rendering) would go here --- 
+    // --- Other per-frame logic (e.g., ImGui rendering) would go here ---
 
     // Call the original EndScene
     return oEndScene(pDevice);
 }
 
-// --- DLL Entry Point --- 
+// --- DLL Entry Point ---
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
         case DLL_PROCESS_ATTACH:
             DisableThreadLibraryCalls(hModule);
-            g_hModule = hModule; 
+            g_hModule = hModule;
             g_bShutdown = false;
             // Create the IPC thread first
             g_hIPCThread = CreateThread(nullptr, 0, IPCThread, hModule, 0, nullptr);
             if (!g_hIPCThread) {
                 OutputDebugStringA("[WoWInjectDLL] Failed to create IPC thread!\n");
-                return FALSE; 
+                return FALSE;
             }
             // Now setup the hook
-            SetupHook(); 
+            SetupHook();
             break;
         case DLL_THREAD_ATTACH:
         case DLL_THREAD_DETACH:
@@ -762,30 +762,30 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         case DLL_PROCESS_DETACH:
             g_bShutdown = true; // Signal threads to shutdown
             RemoveHook();
-            
+
             // Cleanly shutdown the named pipe (signal the server thread)
-             const WCHAR* pipeNameToSignal = L"\\\\.\\pipe\\WowInjectPipe"; 
+             const WCHAR* pipeNameToSignal = L"\\\\.\\pipe\\WowInjectPipe";
              HANDLE hDummyClient = CreateFileW(
-                 pipeNameToSignal, 
-                 GENERIC_WRITE, 
+                 pipeNameToSignal,
+                 GENERIC_WRITE,
                  0, NULL, OPEN_EXISTING, 0, NULL);
 
              if (hDummyClient != INVALID_HANDLE_VALUE) {
                   OutputDebugStringA("[WoWInjectDLL] Signalling pipe server thread to exit ConnectNamedPipe wait...\n");
-                  CloseHandle(hDummyClient); 
+                  CloseHandle(hDummyClient);
              } else {
                  DWORD error = GetLastError();
-                 if (error != ERROR_PIPE_BUSY && error != ERROR_FILE_NOT_FOUND) { 
+                 if (error != ERROR_PIPE_BUSY && error != ERROR_FILE_NOT_FOUND) {
                     char error_buf[150];
                     sprintf_s(error_buf, sizeof(error_buf), "[WoWInjectDLL] CreateFileW to signal pipe failed unexpectedly. Error: %lu\n", error);
                     OutputDebugStringA(error_buf);
                  }
              }
-            
+
             // Wait for the IPC thread to terminate
             if (g_hIPCThread) {
                  OutputDebugStringA("[WoWInjectDLL] Waiting for IPC thread to terminate...\n");
-                 WaitForSingleObject(g_hIPCThread, 5000); 
+                 WaitForSingleObject(g_hIPCThread, 5000);
                  CloseHandle(g_hIPCThread);
                  g_hIPCThread = nullptr;
                  OutputDebugStringA("[WoWInjectDLL] IPC thread terminated.\n");
@@ -796,11 +796,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     return TRUE;
 }
 
-// --- Hook Setup/Removal Implementations --- 
+// --- Hook Setup/Removal Implementations ---
 
 void SetupHook() {
     try {
-        DWORD base_ptr_val = *(reinterpret_cast<DWORD*>(D3D_PTR_1)); 
+        DWORD base_ptr_val = *(reinterpret_cast<DWORD*>(D3D_PTR_1));
         if (!base_ptr_val) throw std::runtime_error("Failed to read base_ptr");
         DWORD pDevice_val = *(reinterpret_cast<DWORD*>(base_ptr_val + D3D_PTR_2));
         if (!pDevice_val) throw std::runtime_error("Failed to read pDevice");
@@ -810,7 +810,7 @@ void SetupHook() {
         if (!endSceneAddr) throw std::runtime_error("Failed to read EndScene address");
 
         oEndScene = (EndScene_t)endSceneAddr;
-        
+
         char buffer[100];
         sprintf_s(buffer, sizeof(buffer), "[WoWInjectDLL] Found EndScene address: 0x%X\n", endSceneAddr);
         OutputDebugStringA(buffer);
@@ -825,25 +825,25 @@ void SetupHook() {
         } else {
              sprintf_s(buffer, sizeof(buffer), "[WoWInjectDLL] Detours failed to attach hook, error: %ld\n", error);
              OutputDebugStringA(buffer);
-             oEndScene = nullptr; 
+             oEndScene = nullptr;
         }
 
     } catch (const std::exception& e) {
         std::string errorMsg = "[WoWInjectDLL] ERROR in SetupHook (exception): ";
         errorMsg += e.what();
-        errorMsg += "\n"; 
+        errorMsg += "\n";
         OutputDebugStringA(errorMsg.c_str());
-        oEndScene = nullptr; 
+        oEndScene = nullptr;
     } catch (...) {
         OutputDebugStringA("[WoWInjectDLL] CRITICAL ERROR in SetupHook: Memory access violation.\n");
-         oEndScene = nullptr; 
+         oEndScene = nullptr;
     }
 }
 
 void RemoveHook() {
     if (oEndScene == nullptr) {
         OutputDebugStringA("[WoWInjectDLL] RemoveHook: Hook not attached or already removed.\n");
-        return; 
+        return;
     }
     OutputDebugStringA("[WoWInjectDLL] Removing EndScene hook...\n");
     DetourTransactionBegin();
@@ -851,10 +851,10 @@ void RemoveHook() {
     DetourDetach(&(PVOID&)oEndScene, hkEndScene);
     DetourTransactionCommit();
     OutputDebugStringA("[WoWInjectDLL] EndScene hook detached.\n");
-    oEndScene = nullptr; 
+    oEndScene = nullptr;
 }
 
-// --- IPC Thread Implementation (Named Pipe Server) --- 
+// --- IPC Thread Implementation (Named Pipe Server) ---
 
 DWORD WINAPI IPCThread(LPVOID lpParam) {
     OutputDebugStringA("[WoWInjectDLL] IPC Thread started.\n");
@@ -863,16 +863,16 @@ DWORD WINAPI IPCThread(LPVOID lpParam) {
     BOOL success;
 
     g_hPipe = CreateNamedPipeW(
-        L"\\\\.\\pipe\\WowInjectPipe",      
-        PIPE_ACCESS_DUPLEX,            
-        PIPE_TYPE_MESSAGE |            
-        PIPE_READMODE_MESSAGE |        
-        PIPE_WAIT,                     
-        1,                             
-        sizeof(buffer),                
-        sizeof(buffer),                
-        0,                             
-        NULL);                         
+        L"\\\\.\\pipe\\WowInjectPipe",
+        PIPE_ACCESS_DUPLEX,
+        PIPE_TYPE_MESSAGE |
+        PIPE_READMODE_MESSAGE |
+        PIPE_WAIT,
+        1,
+        sizeof(buffer),
+        sizeof(buffer),
+        0,
+        NULL);
 
     if (g_hPipe == INVALID_HANDLE_VALUE) {
         DWORD lastError = GetLastError();
@@ -884,29 +884,29 @@ DWORD WINAPI IPCThread(LPVOID lpParam) {
     OutputDebugStringA("[WoWInjectDLL] Pipe created. Entering main connection loop.\n");
 
     // Outer loop to wait for connections repeatedly
-    while (!g_bShutdown) 
-    { 
+    while (!g_bShutdown)
+    {
         OutputDebugStringA("[WoWInjectDLL] Waiting for client connection...\n");
-        BOOL connected = ConnectNamedPipe(g_hPipe, NULL); 
-        if (!connected && GetLastError() != ERROR_PIPE_CONNECTED) 
+        BOOL connected = ConnectNamedPipe(g_hPipe, NULL);
+        if (!connected && GetLastError() != ERROR_PIPE_CONNECTED)
         {
             char err_buf[128];
             sprintf_s(err_buf, sizeof(err_buf), "[WoWInjectDLL] ConnectNamedPipe failed. GLE=%d\n", GetLastError());
             OutputDebugStringA(err_buf);
-            continue; 
+            continue;
         }
         if (g_bShutdown) break;
 
         OutputDebugStringA("[WoWInjectDLL] Client connected. Entering communication loop.\n");
 
         // Inner Communication Loop
-        while (!g_bShutdown) 
-        { 
+        while (!g_bShutdown)
+        {
             // Read Command
             success = ReadFile(
                 g_hPipe,
                 buffer,
-                sizeof(buffer) - 1, 
+                sizeof(buffer) - 1,
                 &bytesRead,
                 NULL);
 
@@ -918,10 +918,10 @@ DWORD WINAPI IPCThread(LPVOID lpParam) {
                     sprintf_s(err_buf, sizeof(err_buf), "[WoWInjectDLL] ReadFile failed. GLE=%d\n", GetLastError());
                     OutputDebugStringA(err_buf);
                 }
-                 break; 
+                 break;
             }
 
-            buffer[bytesRead] = '\0'; 
+            buffer[bytesRead] = '\0';
             std::string command(buffer);
             char log_buf[256];
             sprintf_s(log_buf, sizeof(log_buf), "[WoWInjectDLL] IPC Received Raw: [%s]\n", command.c_str());
@@ -933,18 +933,18 @@ DWORD WINAPI IPCThread(LPVOID lpParam) {
             // Wait for and Send Response (Polling)
             std::string responseToSend = "";
             bool responseFound = false;
-            for (int i = 0; i < 10; ++i) { 
+            for (int i = 0; i < 10; ++i) {
                 {
                     std::lock_guard<std::mutex> lock(g_queueMutex);
                     if (!g_responseQueue.empty()) {
                         responseToSend = g_responseQueue.front();
                         g_responseQueue.pop();
                         responseFound = true;
-                        break; 
+                        break;
                     }
                 }
-                if (g_bShutdown) break; 
-                Sleep(10); 
+                if (g_bShutdown) break;
+                Sleep(10);
             }
 
             if (!responseFound && !g_bShutdown) {
@@ -956,7 +956,7 @@ DWORD WINAPI IPCThread(LPVOID lpParam) {
                      sprintf_s(log_buf, sizeof(log_buf), "[WoWInjectDLL] IPC WARNING: No response generated/found for command [%.50s] within timeout.\n", command.c_str());
                      OutputDebugStringA(log_buf);
                 }
-            } 
+            }
 
             if (!responseToSend.empty()) {
                 DWORD bytesWritten;
@@ -966,12 +966,12 @@ DWORD WINAPI IPCThread(LPVOID lpParam) {
                     responseToSend.length() + 1, // Include null terminator
                     &bytesWritten,
                     NULL);
-                
+
                 if (!success || bytesWritten != (responseToSend.length() + 1)) {
                     char err_buf[128];
                     sprintf_s(err_buf, sizeof(err_buf), "[WoWInjectDLL] WriteFile failed for response. GLE=%d\n", GetLastError());
                     OutputDebugStringA(err_buf);
-                    break; 
+                    break;
                 } else {
                      sprintf_s(log_buf, sizeof(log_buf), "[WoWInjectDLL] Sent response: [%.100s]...\n", responseToSend.c_str());
                      OutputDebugStringA(log_buf);
@@ -980,12 +980,12 @@ DWORD WINAPI IPCThread(LPVOID lpParam) {
                          OutputDebugStringA(log_buf);
                      }
                 }
-            } 
+            }
         } // End inner communication loop
 
         // Client disconnected or error occurred
         OutputDebugStringA("[WoWInjectDLL] Client disconnected or communication loop ended. Disconnecting server side.\n");
-        if (!DisconnectNamedPipe(g_hPipe)) 
+        if (!DisconnectNamedPipe(g_hPipe))
         {
             char err_buf[128];
             sprintf_s(err_buf, sizeof(err_buf), "[WoWInjectDLL] DisconnectNamedPipe failed. GLE=%d\n", GetLastError());
@@ -997,7 +997,7 @@ DWORD WINAPI IPCThread(LPVOID lpParam) {
     // Cleanup when g_bShutdown becomes true
     OutputDebugStringA("[WoWInjectDLL] IPC Thread exiting due to shutdown signal. Closing pipe handle.\n");
     if (g_hPipe != INVALID_HANDLE_VALUE) {
-        DisconnectNamedPipe(g_hPipe); 
+        DisconnectNamedPipe(g_hPipe);
         CloseHandle(g_hPipe);
         g_hPipe = INVALID_HANDLE_VALUE;
     }
@@ -1015,7 +1015,7 @@ void HandleIPCCommand(const std::string& command) {
     } else if (command == "GET_TIME_MS") {
         req.type = REQ_GET_TIME_MS;
         sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type GET_TIME_MS.\n");
-    } else if (command == "GET_COMBO_POINTS") { 
+    } else if (command == "GET_COMBO_POINTS") {
          req.type = REQ_GET_COMBO_POINTS;
          sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type GET_COMBO_POINTS.\n");
     } else if (command == "GET_TARGET_GUID") {
@@ -1031,30 +1031,31 @@ void HandleIPCCommand(const std::string& command) {
     } else if (sscanf_s(command.c_str(), "GET_SPELL_INFO:%d", &req.spell_id) == 1) {
         req.type = REQ_GET_SPELL_INFO;
         sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type GET_SPELL_INFO. SpellID: %d\n", req.spell_id);
-    } else {
+    } else if (sscanf_s(command.c_str(), "CAST_SPELL:%d,%llu", &req.spell_id, &req.target_guid) == 2) {
+        // Parse CAST_SPELL with spell ID and target GUID
+        req.type = REQ_CAST_SPELL;
+        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type CAST_SPELL. SpellID: %d, TargetGUID: %llu (0x%llX)\n", req.spell_id, req.target_guid, req.target_guid);
+    }
+    else {
         char unit_id_buf[33] = {0};
         if (sscanf_s(command.c_str(), "IS_IN_RANGE:%d,%32s", &req.spell_id, unit_id_buf, (unsigned)_countof(unit_id_buf)) == 2) {
              req.type = REQ_IS_IN_RANGE;
              req.unit_id = unit_id_buf;
-             req.spell_name.clear(); 
+             req.spell_name.clear();
              sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type IS_IN_RANGE. SpellID: %d, UnitID: %s\n", req.spell_id, req.unit_id.c_str());
-        } else {
-            if (sscanf_s(command.c_str(), "CAST_SPELL:%d", &req.spell_id) == 1) {
-                 req.type = REQ_CAST_SPELL;
-                 req.target_guid = 0; 
-                 sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type CAST_SPELL. SpellID: %d, TargetGUID: 0\n", req.spell_id);
-            }
-            else if (sscanf_s(command.c_str(), "CAST_SPELL:%d,%llu", &req.spell_id, &req.target_guid) == 2) {
-                 req.type = REQ_CAST_SPELL;
-                 sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type CAST_SPELL. SpellID: %d, TargetGUID: %llu (0x%llX)\n", req.spell_id, req.target_guid, req.target_guid);
-            }
-            else {
-                req.type = REQ_UNKNOWN;
-                sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Unknown command received: [%.100s]\n", command.c_str());
-                req.data = command;
-            }
         }
-    } 
+        // Remove the older CAST_SPELL parsing without GUID
+        /*else if (sscanf_s(command.c_str(), "CAST_SPELL:%d", &req.spell_id) == 1) {
+             req.type = REQ_CAST_SPELL;
+             req.target_guid = 0;
+             sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type CAST_SPELL. SpellID: %d, TargetGUID: 0\n", req.spell_id);
+        }*/
+        else {
+            req.type = REQ_UNKNOWN;
+            sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Unknown command received: [%.100s]\n", command.c_str());
+            req.data = command;
+        }
+    }
     OutputDebugStringA(log_buffer);
 
     // Queue the request

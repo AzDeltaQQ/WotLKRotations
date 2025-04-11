@@ -3,7 +3,8 @@
         "action": "Spell",
         "detail": 1752,
         "target": "target",
-        "condition": "Target Exists",
-        "cooldown": 0.0
+        "condition": "Player Energy >= X",
+        "cooldown": 0.0,
+        "condition_value_x": 45.0
     }
 ]

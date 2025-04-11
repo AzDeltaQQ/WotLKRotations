@@ -251,6 +251,10 @@ class GameInterface:
              expected_prefix = "KNOWN_SPELLS:"
         elif command.startswith("EXEC_LUA:"):
             expected_prefix = "LUA_RESULT:"
+        elif command.startswith("GET_TIME_MS"):
+             expected_prefix = "TIME:"
+        elif command.startswith("GET_CD:"):
+             expected_prefix = "CD:"
         # Add other command prefixes here
 
         if expected_prefix is None:
@@ -661,30 +665,56 @@ class GameInterface:
     # _get_spell_cooldown_direct_legacy, _get_spell_range_direct_legacy
     # get_game_time_millis_direct, is_gcd_active (These might return later via IPC calls)
 
-    def cast_spell(self, spell_id: int, target_guid: Optional[int] = None) -> bool:
+    def cast_spell(self, spell_id: int, target_guid: int = 0) -> bool:
         """
         Sends a command to the DLL to cast a spell using the internal C function.
-        Command: "CAST_SPELL:<spell_id>[,<target_guid>]"
-        Returns True if the command was sent successfully, False otherwise.
-        (Does not guarantee the spell cast was successful in-game).
+        Command: "CAST_SPELL:<spell_id>,<target_guid>" (Target GUID 0 implies default behavior)
+        Waits for a response "CAST_RESULT:<id>,<result_char>".
+        Returns True if the response indicates success (e.g., result_char is '1'), False otherwise.
+        (The exact meaning of result_char depends on the DLL's CastLocalPlayerSpell return value).
         """
         if not self.is_ready():
             print("[GameInterface] Cannot cast spell: Pipe not connected.")
             return False
 
-        if target_guid:
-            command = f"CAST_SPELL:{spell_id},{target_guid}"
-        else:
-            command = f"CAST_SPELL:{spell_id}" # No GUID, implies self-cast or current target handling by C func
+        # Ensure target_guid is an integer, default to 0 if None or invalid
+        if target_guid is None:
+             target_guid = 0
+        try:
+             target_guid_int = int(target_guid)
+        except (ValueError, TypeError):
+             print(f"[GameInterface] Warning: Invalid target_guid '{target_guid}' provided to cast_spell. Defaulting to 0.")
+             target_guid_int = 0
 
-        print(f"[GameInterface] Sending cast command: {command}") # Debug print
-        success = self.send_command(command)
-        if not success:
-             print(f"[GameInterface] Failed to send CAST_SPELL command: {command}")
-        # Optional: Could use send_receive here if we want to wait for "CAST_SENT"
-        # response = self.send_receive(command, timeout_s=0.5)
-        # return response is not None and response.startswith(f"CAST_SENT:{spell_id}")
-        return success # Return based on send success for now
+        command = f"CAST_SPELL:{spell_id},{target_guid_int}"
+
+        print(f"[GameInterface] Sending cast command and waiting for result: {command}")
+        # Use send_receive to wait for the specific response
+        response = self.send_receive(command, timeout_ms=1500) # Use a short timeout, casting should be quick
+
+        if response and response.startswith("CAST_RESULT:"):
+            try:
+                parts = response.split(':')[1].split(',')
+                if len(parts) == 2:
+                    # returned_spell_id = int(parts[0]) # Optional: Check if ID matches
+                    result_char_str = parts[1]
+                    # Assuming the C function returns non-zero (e.g., 1) on success for now.
+                    # Adjust this check based on actual CastLocalPlayerSpell behavior.
+                    is_success = result_char_str != '0'
+                    print(f"[GameInterface] Received CAST_RESULT for {spell_id}: Result='{result_char_str}', Success={is_success}")
+                    return is_success
+                else:
+                    print(f"[GameInterface] Invalid CAST_RESULT format: {response}")
+                    return False
+            except (ValueError, IndexError) as e:
+                print(f"[GameInterface] Error parsing CAST_RESULT response '{response}': {e}")
+                return False
+        elif response:
+             print(f"[GameInterface] Unexpected response to CAST_SPELL: {response[:100]}...")
+             return False
+        else:
+             print(f"[GameInterface] No or invalid response received for CAST_SPELL command (Timeout?).")
+             return False # Timeout or other error
 
     # --- Example Usage (Test Function) ---
     def test_cast_spell(self, spell_id_to_test: int, target_guid_to_test: Optional[int] = None):

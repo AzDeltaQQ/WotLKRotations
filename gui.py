@@ -137,8 +137,8 @@ class WowMonitorApp:
         # self.filter_show_dynamicobj_var = tk.BooleanVar(value=False) # Removed
         # self.filter_show_corpses_var = tk.BooleanVar(value=False) # Removed
 
-        # --- Initialize Editor Data ---
-        # Redefined conditions for flexibility
+        # --- Initialize Editor Data & Variables ---
+        # Condition definitions (moved for clarity)
         self.rule_conditions = [
             # Simple
             "None",
@@ -173,6 +173,19 @@ class WowMonitorApp:
         ]
         self.rule_actions = ["Spell", "Macro", "Lua"]
         self.rule_targets = ["target", "player", "focus", "pet", "mouseover"]
+
+        # Editor Input Variables
+        self.action_var = tk.StringVar()
+        self.spell_id_var = tk.StringVar()
+        self.target_var = tk.StringVar()
+        self.condition_var = tk.StringVar()
+        self.condition_value_x_var = tk.StringVar()
+        self.condition_value_y_var = tk.StringVar() # For Between X-Y
+        self.condition_text_var = tk.StringVar() # For Aura/Spell Name/ID
+        self.int_cd_var = tk.StringVar(value="0.0")
+        # These need to be defined here for binding in setup_rotation_editor_tab
+        self.lua_code_var = tk.StringVar() # For the scrolledtext binding
+        self.macro_text_var = tk.StringVar()
 
         # --- Style Dictionaries (For non-ttk widgets) ---
         self.rule_listbox_style = LISTBOX_STYLE
@@ -209,6 +222,7 @@ class WowMonitorApp:
         self.stop_rotation_flag = threading.Event()
         self.core_init_attempting = False
         self.last_core_init_attempt = 0.0
+        self.core_initialized = False # <<< ADD THIS LINE
 
         # --- Populate Initial State ---
         self.populate_script_dropdown()
@@ -447,79 +461,87 @@ class WowMonitorApp:
 
         left_pane = ttk.Frame(main_frame)
         left_pane.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        left_pane.rowconfigure(2, weight=1)
+        # Make left_pane resize vertically if needed (e.g., Spell Info)
+        # left_pane.rowconfigure(0, weight=1)
+        # left_pane.rowconfigure(1, weight=0) # Spell Info section doesn't need to expand typically
 
-        define_frame = ttk.LabelFrame(left_pane, text="Define Rule", padding=(10, 5))
-        define_frame.grid(row=0, column=0, sticky="new")
+        # --- Define Rule Section ---
+        define_frame = ttk.LabelFrame(left_pane, text="Define Rule", padding="10")
+        define_frame.grid(row=0, column=0, sticky="new", pady=(0, 10))
         define_frame.columnconfigure(1, weight=1)
 
-        # --- Action --- 
-        ttk.Label(define_frame, text="Action:").grid(row=0, column=0, padx=5, pady=4, sticky=tk.W)
-        self.rule_action_var = tk.StringVar(value=self.rule_actions[0])
-        self.rule_action_combo = ttk.Combobox(define_frame, textvariable=self.rule_action_var, values=self.rule_actions, state="readonly", width=10)
-        self.rule_action_combo.grid(row=0, column=1, padx=5, pady=4, sticky=tk.W)
-        self.rule_action_combo.bind("<<ComboboxSelected>>", self._update_detail_inputs)
+        # Action Dropdown
+        ttk.Label(define_frame, text="Action:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
+        self.action_dropdown = ttk.Combobox(define_frame, textvariable=self.action_var, values=["Spell", "Lua", "Macro"], state="readonly")
+        self.action_dropdown.grid(row=0, column=1, sticky="ew", padx=5, pady=2)
+        self.action_dropdown.set("Spell")
+        self.action_dropdown.bind("<<ComboboxSelected>>", self._update_detail_inputs)
 
-        # --- Detail (Label changes dynamically) --- 
-        self.rule_detail_label = ttk.Label(define_frame, text="Spell ID:") # Default label
-        self.rule_detail_label.grid(row=1, column=0, padx=5, pady=4, sticky=tk.W)
-        # Frame to hold the different detail entry widgets
-        self.rule_detail_frame = ttk.Frame(define_frame)
-        self.rule_detail_frame.grid(row=1, column=1, padx=5, pady=4, sticky=tk.EW)
-        self.rule_detail_frame.columnconfigure(0, weight=1) # Make entry expand
-        self.rule_detail_spell_id_var = tk.StringVar()
-        self.rule_detail_spell_id_entry = ttk.Entry(self.rule_detail_frame, textvariable=self.rule_detail_spell_id_var, width=10)
-        self.rule_detail_macro_text_var = tk.StringVar()
-        self.rule_detail_macro_text_entry = ttk.Entry(self.rule_detail_frame, textvariable=self.rule_detail_macro_text_var)
-        self.rule_detail_lua_code_var = tk.StringVar()
-        self.rule_detail_lua_code_entry = ttk.Entry(self.rule_detail_frame, textvariable=self.rule_detail_lua_code_var)
-        # Pack the spell ID entry by default
-        self.rule_detail_spell_id_entry.grid(row=0, column=0, sticky=tk.EW)
+        # Detail Inputs Frame (Managed by _update_detail_inputs)
+        self.detail_frame = ttk.Frame(define_frame)
+        self.detail_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
+        self.detail_frame.columnconfigure(1, weight=1)
 
-        # --- Target --- 
-        ttk.Label(define_frame, text="Target:").grid(row=2, column=0, padx=5, pady=4, sticky=tk.W)
-        self.rule_target_var = tk.StringVar(value=self.rule_targets[0])
-        self.rule_target_combo = ttk.Combobox(define_frame, textvariable=self.rule_target_var, values=self.rule_targets, state="readonly", width=12)
-        self.rule_target_combo.grid(row=2, column=1, padx=5, pady=4, sticky=tk.W)
+        # Spell ID Input
+        self.spell_id_label = ttk.Label(self.detail_frame, text="Spell ID:")
+        self.spell_id_entry = ttk.Entry(self.detail_frame, textvariable=self.spell_id_var)
+        # Lua Code Input
+        self.lua_code_label = ttk.Label(self.detail_frame, text="Lua Code:")
+        self.lua_code_text = scrolledtext.ScrolledText(self.detail_frame, wrap=tk.WORD, height=3, width=30, font=CODE_FONT)
+        self.lua_code_text.bind("<KeyRelease>", self._on_lua_change) # Bind update
+        # Macro Text Input
+        self.macro_text_label = ttk.Label(self.detail_frame, text="Macro Text:")
+        self.macro_text_entry = ttk.Entry(self.detail_frame, textvariable=self.macro_text_var)
 
-        # --- Condition --- 
-        ttk.Label(define_frame, text="Condition:").grid(row=3, column=0, padx=5, pady=4, sticky=tk.W)
-        self.rule_condition_var = tk.StringVar(value=self.rule_conditions[0])
-        # Make combobox wider to accommodate new condition names
-        self.rule_condition_combo = ttk.Combobox(define_frame, textvariable=self.rule_condition_var, values=self.rule_conditions, state="readonly", width=30) 
-        self.rule_condition_combo.grid(row=3, column=1, columnspan=2, padx=5, pady=4, sticky=tk.EW) # Span 2 columns
-        self.rule_condition_combo.bind("<<ComboboxSelected>>", self._update_condition_inputs)
+        # Target Dropdown
+        ttk.Label(define_frame, text="Target:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=2)
+        self.target_dropdown = ttk.Combobox(define_frame, textvariable=self.target_var, values=["target", "player", "pet", "focus"], state="readonly")
+        self.target_dropdown.grid(row=2, column=1, sticky="ew", padx=5, pady=2)
+        self.target_dropdown.set("target")
 
-        # --- Dynamic Condition Inputs Frame --- 
-        # This frame will hold the extra entry boxes, placed below Condition
-        self.condition_inputs_frame = ttk.Frame(define_frame)
-        self.condition_inputs_frame.grid(row=4, column=1, columnspan=2, padx=5, pady=0, sticky=tk.EW) # Span 2 columns
-        # Variables and Entry widgets for dynamic values (X, Y, Name/ID)
-        self.condition_value_x_var = tk.StringVar()
-        self.condition_value_x_entry = ttk.Entry(self.condition_inputs_frame, textvariable=self.condition_value_x_var, width=8)
-        self.condition_value_y_var = tk.StringVar()
-        self.condition_value_y_entry = ttk.Entry(self.condition_inputs_frame, textvariable=self.condition_value_y_var, width=8)
-        self.condition_text_var = tk.StringVar() # For Aura Name/ID or Spell ID
-        self.condition_text_entry = ttk.Entry(self.condition_inputs_frame, textvariable=self.condition_text_var, width=20)
-        self.condition_input_label = ttk.Label(self.condition_inputs_frame, text="") # Label for context (e.g., "Value X:", "Aura Name/ID:")
+        # Condition Dropdown
+        ttk.Label(define_frame, text="Condition:").grid(row=3, column=0, sticky=tk.W, padx=5, pady=2)
+        self.condition_dropdown = ttk.Combobox(
+            define_frame,
+            textvariable=self.condition_var,
+            state="readonly",
+            values=[
+                "None", "Target Exists", "Player Health <= X", "Target Health <= X",
+                "Player Energy >= X", "Rage >= X", "Mana >= X", # Renamed Rage/Energy for consistency
+                "Combo Points >= X", "Target Is Enemy", "Player Has Aura",
+                "Target Has Aura", "Target Has Debuff", "Player In Combat", "Target In Combat",
+                "Target Is Casting", "Player Is Moving" # Added more examples
+                # Add more conditions as needed
+            ]
+        )
+        self.condition_dropdown.grid(row=3, column=1, sticky="ew", padx=5, pady=2)
+        self.condition_dropdown.set("None") # Default value
+        self.condition_dropdown.bind("<<ComboboxSelected>>", self._update_condition_inputs) # Bind update function
 
-        # --- Internal Cooldown --- 
-        ttk.Label(define_frame, text="Int. CD (s):").grid(row=5, column=0, padx=5, pady=4, sticky=tk.W) # Row adjusted
-        self.rule_cooldown_var = tk.StringVar(value="0.0")
-        self.rule_cooldown_entry = ttk.Entry(define_frame, textvariable=self.rule_cooldown_var, width=10)
-        self.rule_cooldown_entry.grid(row=5, column=1, padx=5, pady=4, sticky=tk.W) # Row adjusted
+        # ADDED: Condition Value Input
+        ttk.Label(define_frame, text="Condition Value (X):").grid(row=4, column=0, sticky=tk.W, padx=5, pady=2)
+        self.condition_value_x_entry = ttk.Entry(define_frame, textvariable=self.condition_value_x_var, state=tk.DISABLED)
+        self.condition_value_x_entry.grid(row=4, column=1, sticky="ew", padx=5, pady=2)
 
-        # --- Add/Update Button --- 
-        add_rule_button = ttk.Button(define_frame, text="Add/Update Rule", command=self.add_rotation_rule)
-        add_rule_button.grid(row=6, column=0, columnspan=2, pady=(10, 5)) # Row adjusted
+        # Internal Cooldown (Row adjustment needed)
+        ttk.Label(define_frame, text="Int. CD (s):").grid(row=5, column=0, sticky=tk.W, padx=5, pady=2) # Changed row to 5
+        self.int_cd_entry = ttk.Entry(define_frame, textvariable=self.int_cd_var)
+        self.int_cd_entry.grid(row=5, column=1, sticky="ew", padx=5, pady=2) # Changed row to 5
 
-        lookup_frame = ttk.LabelFrame(left_pane, text="Spell Info", padding=(10, 5))
-        lookup_frame.grid(row=1, column=0, sticky="new", pady=(10, 10))
-        lookup_frame.columnconfigure(1, weight=1)
-        self.scan_spellbook_button = ttk.Button(lookup_frame, text="List Known Spells...", command=self.scan_spellbook)
-        self.scan_spellbook_button.grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        self.lookup_spell_button = ttk.Button(lookup_frame, text="Lookup Spell ID...", command=self.lookup_spell_info)
-        self.lookup_spell_button.grid(row=0, column=1, padx=5, pady=5, sticky="w")
+        # Add/Update Button (Row adjustment needed)
+        self.add_update_button = ttk.Button(define_frame, text="Add/Update Rule", command=self.add_rotation_rule)
+        self.add_update_button.grid(row=6, column=0, columnspan=2, pady=10) # Changed row to 6
+
+        # --- Spell Info Section ---
+        spell_info_frame = ttk.LabelFrame(left_pane, text="Spell Info", padding="10")
+        spell_info_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        spell_info_frame.columnconfigure(0, weight=1)
+        spell_info_frame.columnconfigure(1, weight=1)
+
+        list_spells_button = ttk.Button(spell_info_frame, text="List Known Spells...", command=self.scan_spellbook)
+        list_spells_button.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+        lookup_spell_button = ttk.Button(spell_info_frame, text="Lookup Spell ID...", command=self.lookup_spell_info)
+        lookup_spell_button.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
 
         right_pane = ttk.Frame(main_frame)
         right_pane.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
@@ -564,33 +586,31 @@ class WowMonitorApp:
 
     # --- Rename _update_rule_input_state to _update_detail_inputs ---
     def _update_detail_inputs(self, event=None):
-        action_type = self.rule_action_var.get()
+        action_type = self.action_dropdown.get()
         # Forget all detail entries first
-        self.rule_detail_spell_id_entry.grid_forget()
-        self.rule_detail_macro_text_entry.grid_forget()
-        self.rule_detail_lua_code_entry.grid_forget()
+        self.spell_id_entry.grid_forget()
+        self.lua_code_text.grid_forget()
+        self.macro_text_entry.grid_forget()
         # Update label and show the correct entry
         if action_type == "Spell":
-            self.rule_detail_label.config(text="Spell ID:")
-            self.rule_detail_spell_id_entry.grid(row=0, column=0, sticky=tk.EW)
+            self.spell_id_label.config(text="Spell ID:")
+            self.spell_id_entry.grid(row=0, column=0, sticky=tk.EW)
         elif action_type == "Macro":
-            self.rule_detail_label.config(text="Macro Text:")
-            self.rule_detail_macro_text_entry.grid(row=0, column=0, sticky=tk.EW)
+            self.macro_text_label.config(text="Macro Text:")
+            self.macro_text_entry.grid(row=0, column=0, sticky=tk.EW)
         elif action_type == "Lua":
-            self.rule_detail_label.config(text="Lua Code:")
-            self.rule_detail_lua_code_entry.grid(row=0, column=0, sticky=tk.EW)
+            self.lua_code_label.config(text="Lua Code:")
+            self.lua_code_text.grid(row=0, column=0, sticky=tk.EW)
         else:
-            self.rule_detail_label.config(text="Detail:")
+            self.spell_id_label.config(text="Detail:")
 
     # --- New method to manage condition inputs --- 
     def _update_condition_inputs(self, event=None):
-        condition = self.rule_condition_var.get()
+        condition = self.condition_dropdown.get()
         
         # Hide all dynamic inputs first
-        self.condition_input_label.grid_forget()
         self.condition_value_x_entry.grid_forget()
-        self.condition_value_y_entry.grid_forget()
-        self.condition_text_entry.grid_forget()
+        self.int_cd_entry.grid_forget()
         
         # Show inputs based on selected condition
         if "< X" in condition or "> X" in condition or ">= X" in condition:
@@ -601,38 +621,38 @@ class WowMonitorApp:
             elif "Rage" in condition: label_text = "Rage X:"
             elif "Energy" in condition: label_text = "Energy X:"
             elif "Combo Points" in condition: label_text = "CP X:"
-            self.condition_input_label.config(text=label_text)
-            self.condition_input_label.grid(row=0, column=0, padx=(0, 2), sticky=tk.W)
-            self.condition_value_x_entry.grid(row=0, column=1, sticky=tk.W)
+            self.condition_value_x_entry.config(text=label_text)
+            self.condition_value_x_entry.grid(row=0, column=0, padx=(0, 2), sticky=tk.W)
         elif "Between X-Y" in condition:
             label_text = "HP %" # Currently only HP uses this
-            self.condition_input_label.config(text=f"{label_text} X:")
-            self.condition_input_label.grid(row=0, column=0, padx=(0, 2), sticky=tk.W)
-            self.condition_value_x_entry.grid(row=0, column=1, padx=(0, 5), sticky=tk.W)
-            ttk.Label(self.condition_inputs_frame, text="Y:").grid(row=0, column=2, padx=(0, 2), sticky=tk.W) # Add Y label
+            self.condition_value_x_entry.config(text=f"{label_text} X:")
+            self.condition_value_x_entry.grid(row=0, column=0, padx=(0, 2), sticky=tk.W)
+            ttk.Label(self.detail_frame, text="Y:").grid(row=0, column=2, padx=(0, 2), sticky=tk.W) # Add Y label
             self.condition_value_y_entry.grid(row=0, column=3, sticky=tk.W)
         elif "Aura" in condition:
-            self.condition_input_label.config(text="Aura Name/ID:")
-            self.condition_input_label.grid(row=0, column=0, padx=(0, 2), sticky=tk.W)
+            self.spell_id_label.config(text="Aura Name/ID:")
+            self.condition_value_x_entry.config(text="Aura Name/ID:")
+            self.condition_value_x_entry.grid(row=0, column=0, padx=(0, 2), sticky=tk.W)
             self.condition_text_entry.grid(row=0, column=1, columnspan=3, sticky=tk.EW)
         elif "Is Spell Ready" in condition:
-            self.condition_input_label.config(text="Spell ID:")
-            self.condition_input_label.grid(row=0, column=0, padx=(0, 2), sticky=tk.W)
+            self.spell_id_label.config(text="Spell ID:")
+            self.condition_value_x_entry.config(text="Spell ID:")
+            self.condition_value_x_entry.grid(row=0, column=0, padx=(0, 2), sticky=tk.W)
             self.condition_text_entry.grid(row=0, column=1, columnspan=3, sticky=tk.EW)
 
     # --- Modify clear_rule_input_fields --- 
     def clear_rule_input_fields(self):
-         self.rule_action_var.set(self.rule_actions[0])
-         self.rule_detail_spell_id_var.set("")
-         self.rule_detail_macro_text_var.set("")
-         self.rule_detail_lua_code_var.set("")
-         self.rule_target_var.set(self.rule_targets[0])
-         self.rule_condition_var.set(self.rule_conditions[0])
+         self.action_dropdown.set("Spell")
+         self.spell_id_var.set("")
+         self.lua_code_var.set("")
+         self.macro_text_var.set("")
+         self.target_var.set("target")
+         self.condition_var.set("None")
          # Clear dynamic fields
          self.condition_value_x_var.set("") 
          self.condition_value_y_var.set("") 
          self.condition_text_var.set("") 
-         self.rule_cooldown_var.set("0.0")
+         self.int_cd_var.set("0.0")
          self._update_detail_inputs() # Update detail label/entry
          self._update_condition_inputs() # Hide dynamic condition inputs
          if self.rule_listbox.curselection():
@@ -655,14 +675,14 @@ class WowMonitorApp:
              value_y = rule.get('condition_value_y', '')
              cond_text = rule.get('condition_text', '') # Aura Name/ID or Spell ID
 
-             self.rule_action_var.set(action)
+             self.action_dropdown.set(action)
              self._update_detail_inputs() # Update detail based on action
-             if action == "Spell": self.rule_detail_spell_id_var.set(str(detail))
-             elif action == "Macro": self.rule_detail_macro_text_var.set(str(detail))
-             elif action == "Lua": self.rule_detail_lua_code_var.set(str(detail))
+             if action == "Spell": self.spell_id_var.set(str(detail))
+             elif action == "Macro": self.macro_text_var.set(str(detail))
+             elif action == "Lua": self.lua_code_var.set(str(detail))
              
-             self.rule_target_var.set(target)
-             self.rule_condition_var.set(condition)
+             self.target_var.set(target)
+             self.condition_var.set(condition)
              self._update_condition_inputs() # Show/hide dynamic fields based on condition
 
              # Populate dynamic fields
@@ -670,7 +690,7 @@ class WowMonitorApp:
              self.condition_value_y_var.set(str(value_y))
              self.condition_text_var.set(str(cond_text))
              
-             self.rule_cooldown_var.set(f"{cooldown:.1f}")
+             self.int_cd_var.set(f"{cooldown:.1f}")
         except IndexError:
              # This is where the old error handling was
              self.log_message(f"Error: Selected index {index} out of range for rules.", "ERROR")
@@ -851,34 +871,41 @@ class WowMonitorApp:
         # Correct the target function name for the thread
         self.rotation_thread = threading.Thread(target=self._run_rotation_loop, daemon=True)
         self.rotation_thread.start()
-        self._update_button_states()
+        self.log_message("Rotation thread started.", "INFO")
+        self._update_button_states() # Update buttons after starting
 
     def _run_rotation_loop(self):
-        self.log_message("Rotation thread started.", "DEBUG")
-        loop_counter = 0 # Add a counter
+        loop_count = 0
         while not self.stop_rotation_flag.is_set():
+            start_time = time.monotonic()
             try:
-                # Check core components are still valid within the loop
-                if not (self.mem and self.mem.is_attached() and self.om and self.om.is_ready() and self.game and self.game.is_ready() and self.combat_rotation):
-                    self.log_message("Rotation loop stopping: Core component(s) unavailable.", "WARN")
-                    break # Exit loop if something disconnected
+                # --- Add debug prints here --- #
+                # core_status = self.core_initialized
+                # rotation_engine_status = "Exists" if self.combat_rotation else "None"
+                # print(f"[Rotation Loop Check] Core Initialized: {core_status}, Combat Rotation: {rotation_engine_status}", file=sys.stderr)
+                # ----------------------------- #
+                
+                # self.log_message(f"[THREAD LOOP {loop_count}] Before combat_rotation.run()", "DEBUG") # Commented out spam
+                if self.core_initialized and self.combat_rotation:
+                    # Only run if core is up and we have a rotation engine
+                    self.combat_rotation.run()
+                # Added else block for debugging potential loop without core
+                else:
+                     if not self.core_initialized:
+                         print("[Rotation Loop] Skipping run: Core not initialized.", file=sys.stderr)
+                     if not self.combat_rotation:
+                         print("[Rotation Loop] Skipping run: Combat rotation engine not available.", file=sys.stderr)
+                     # Optional: Add a small sleep here if it's looping without core
+                     time.sleep(0.5)
 
-                # <<< Force print to stderr before calling run >>>
-                print(f"[THREAD LOOP {loop_counter}] Before combat_rotation.run()", file=sys.stderr)
-                
-                self.combat_rotation.run()
-                
-                # <<< Optional: Force print after calling run >>>
-                # print(f"[THREAD LOOP {loop_counter}] After combat_rotation.run()", file=sys.stderr)
-                
-                loop_counter += 1
+                loop_count += 1
                 time.sleep(0.1) # Rotation tick rate
 
             except Exception as e:
                 self.log_message(f"Error in rotation loop: {e}", "ERROR")
                 traceback.print_exc() # Print full traceback to log
                 # Force print exception to stderr as well
-                print(f"[THREAD LOOP {loop_counter}] EXCEPTION: {e}", file=sys.stderr)
+                print(f"[THREAD LOOP {loop_count}] EXCEPTION: {e}", file=sys.stderr)
                 traceback.print_exc(file=sys.stderr)
                 break # Stop on error
 
@@ -1054,9 +1081,10 @@ class WowMonitorApp:
             # This runs in the init thread, signal main thread to potentially update state
              self.log_message("Init Core: Finalizing attempt.", "DEBUG")
              if self.root.winfo_exists():
-                  self.root.after(0, self._finalize_core_init_attempt)
+                  # Pass the success status to the callback
+                  self.root.after(0, self._finalize_core_init_attempt, success)
 
-        return success # Return status (though it's mainly handled by _finalize)
+        # return success # Return value not directly used by caller thread
 
     # --- Add back load_rules_from_editor --- 
     def load_rules_from_editor(self):
@@ -1314,10 +1342,10 @@ class WowMonitorApp:
              messagebox.showerror("Error", "Stop the rotation before editing rules.")
              return
 
-        action = self.rule_action_var.get()
+        action = self.action_dropdown.get()
         detail_str = ""
         detail_val: Any = None
-        condition = self.rule_condition_var.get()
+        condition = self.condition_dropdown.get()
         value_x = None
         value_y = None
         cond_text = None
@@ -1325,16 +1353,16 @@ class WowMonitorApp:
         try:
             # --- Get Action Detail --- 
             if action == "Spell":
-                detail_str = self.rule_detail_spell_id_var.get().strip()
+                detail_str = self.spell_id_var.get().strip()
                 if not detail_str.isdigit() or int(detail_str) <= 0:
                     raise ValueError("Spell ID must be a positive integer.")
                 detail_val = int(detail_str)
             elif action == "Macro":
-                detail_str = self.rule_detail_macro_text_var.get().strip()
+                detail_str = self.macro_text_var.get().strip()
                 if not detail_str: raise ValueError("Macro Text cannot be empty.")
                 detail_val = detail_str
             elif action == "Lua":
-                detail_str = self.rule_detail_lua_code_var.get().strip()
+                detail_str = self.lua_code_var.get().strip()
                 if not detail_str: raise ValueError("Lua Code cannot be empty.")
                 detail_val = detail_str
             else:
@@ -1367,8 +1395,8 @@ class WowMonitorApp:
                 # Could add validation if Spell ID should be int here
 
             # --- Get Target & Cooldown --- 
-            target = self.rule_target_var.get()
-            cooldown_str = self.rule_cooldown_var.get().strip()
+            target = self.target_var.get()
+            cooldown_str = self.int_cd_var.get().strip()
             cooldown = float(cooldown_str)
             if cooldown < 0: raise ValueError("Internal CD must be non-negative.")
 
@@ -1858,9 +1886,16 @@ class WowMonitorApp:
                  traceback.print_exc(file=sys.stderr)
 
     # --- Add back _finalize_core_init_attempt --- 
-    def _finalize_core_init_attempt(self):
+    def _finalize_core_init_attempt(self, success: bool):
          """Called in main thread after core init attempt finishes."""
          self.core_init_attempting = False # Reset flag
+         # --- ADDED: Update core_initialized based on result --- #
+         self.core_initialized = success
+         if success:
+             self.log_message("Core initialization successful (finalized).", "INFO")
+         else:
+             self.log_message("Core initialization failed (finalized).", "WARN")
+         # ---------------------------------------------------- #
          self._update_button_states() # Update GUI based on new state
 
     # --- Add back update_monitor_treeview --- 
@@ -1938,6 +1973,20 @@ class WowMonitorApp:
     def _sort_treeview_column(self, col, reverse):
         # Add the pass statement back correctly indented
         pass
+
+    # ADDED: Method to sync Lua code text widget with its variable
+    def _on_lua_change(self, event=None):
+        """Updates the lua_code_var when the ScrolledText widget changes."""
+        try:
+            if hasattr(self, 'lua_code_text') and self.lua_code_text.winfo_exists() and \
+               hasattr(self, 'lua_code_var'):
+                current_text = self.lua_code_text.get("1.0", tk.END).strip()
+                self.lua_code_var.set(current_text)
+        except tk.TclError:
+            # Handle case where widget might be destroyed during update
+            pass
+        except Exception as e:
+            self.log_message(f"Error updating lua_code_var: {e}", "ERROR")
 
 
 # --- Log Redirector Class ---
