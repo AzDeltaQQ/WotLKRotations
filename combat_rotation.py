@@ -359,10 +359,13 @@ class CombatRotation:
              print(f"[Condition] Placeholder Check: Player Has Aura '{value_text}'", file=sys.stderr)
              return False # Assume false until implemented
         if condition_str == "Player Missing Aura":
-             if value_text is None: return False
-             # Placeholder: return not self.game.has_aura(player.guid, value_text)
-             print(f"[Condition] Placeholder Check: Player Missing Aura '{value_text}'", file=sys.stderr)
-             return True # Assume true until implemented
+             if not target_obj or not value_text: return False # Requires target and text
+             return not self.game.has_aura(target_obj.guid, value_text)
+        if condition_str == "Player Is Behind Target":
+            if not target_obj: return False # Requires target
+            result = self.game.is_behind_target(target_obj.guid)
+            self.logger(f"Check Condition: {condition_str} on {target_obj.guid:X} -> {result}", "DEBUG")
+            return result if result is not None else False # Treat None as False
 
         # --- Spell Readiness Check (Needs game interaction) --- 
         if condition_str == "Is Spell Ready":

@@ -28,8 +28,8 @@ enum RequestType {
     REQ_GET_SPELL_INFO,   // New: Get spell details
     REQ_CAST_SPELL,       // New: Cast spell via internal C function
     REQ_GET_COMBO_POINTS, // New: Get combo points on target
-    REQ_GET_TARGET_GUID,  // << ADDED: Get current target GUID
-    REQ_CHECK_BACKSTAB_POS // New: Check if player is behind target
+    REQ_GET_TARGET_GUID,  // Get current target GUID
+    REQ_IS_BEHIND_TARGET  // Renamed from REQ_CHECK_BACKSTAB_POS
 };
 
 // Moved struct Request definition BEFORE its usage in g_requestQueue
@@ -755,9 +755,9 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                         }
                         break; // End REQ_GET_TARGET_GUID case
 
-                    case REQ_CHECK_BACKSTAB_POS:
+                    case REQ_IS_BEHIND_TARGET:
                         { // Use braces to scope variables
-                            OutputDebugStringA("[WoWInjectDLL] hkEndScene: Processing REQ_CHECK_BACKSTAB_POS (Internal Lookup, Dynamic Player GUID Read).\n");
+                            OutputDebugStringA("[WoWInjectDLL] hkEndScene: Processing REQ_IS_BEHIND_TARGET (Internal Lookup, Dynamic Player GUID Read).\n");
                             response_str = "[ERROR:Unknown]"; // Default error
 
                             // Define function pointer types
@@ -783,11 +783,11 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                                 // Check function pointers first
                                 if (!findObjectByGuidAndFlags) {
                                      response_str = "[ERROR:findObjectFunc null]"; lookupError = true;
-                                     OutputDebugStringA("[WoWInjectDLL] BS Check Error: findObjectByGuidAndFlags pointer is NULL.\n");
+                                     OutputDebugStringA("[WoWInjectDLL] IsBehindTarget Check Error: findObjectByGuidAndFlags pointer is NULL.\n");
                                 }
                                 if (!isUnitVectorDifferenceWithinHemisphere) {
                                      response_str = "[ERROR:HemisphereFunc null]"; lookupError = true;
-                                     OutputDebugStringA("[WoWInjectDLL] BS Check Error: isUnitVectorDifferenceWithinHemisphere ptr is NULL.\n");
+                                     OutputDebugStringA("[WoWInjectDLL] IsBehindTarget Check Error: isUnitVectorDifferenceWithinHemisphere ptr is NULL.\n");
                                 }
 
                                 // --- Get Player GUID (Dynamically via OM structure) ---
@@ -795,34 +795,33 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                                     uintptr_t clientConnection = *(uintptr_t*)CLIENT_CONNECTION_ADDR;
                                     if (!clientConnection) {
                                         response_str = "[ERROR:CC null for PlayerGUID]"; lookupError = true;
-                                        OutputDebugStringA("[WoWInjectDLL] BS Check Error: Client Connection NULL reading PlayerGUID.\n");
+                                        OutputDebugStringA("[WoWInjectDLL] IsBehindTarget Check Error: Client Connection NULL reading PlayerGUID.\n");
                                     } else {
                                         uintptr_t objMgrBase = *(uintptr_t*)(clientConnection + OBJECT_MANAGER_OFFSET);
                                         if (!objMgrBase) {
                                             response_str = "[ERROR:OM null for PlayerGUID]"; lookupError = true;
-                                            OutputDebugStringA("[WoWInjectDLL] BS Check Error: Object Manager Base NULL reading PlayerGUID.\n");
+                                            OutputDebugStringA("[WoWInjectDLL] IsBehindTarget Check Error: Object Manager Base NULL reading PlayerGUID.\n");
                                         } else {
-                                            // Read Player GUID from OM Base + Offset
                                             playerGuid = *(uint64_t*)(objMgrBase + LOCAL_GUID_OFFSET);
                                             if (playerGuid == 0) {
                                                 response_str = "[ERROR:PlayerGUID 0 (Dynamic)]"; lookupError = true;
-                                                OutputDebugStringA("[WoWInjectDLL] BS Check Error: Read Player GUID as 0 from OM offset.\n");
+                                                OutputDebugStringA("[WoWInjectDLL] IsBehindTarget Check Error: Read Player GUID as 0 from OM offset.\n");
                                             } else {
-                                                 sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] BS Check: Dynamically read Player GUID: 0x%llX\n", playerGuid); OutputDebugStringA(log_buffer);
+                                                 sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] IsBehindTarget Check: Dynamically read Player GUID: 0x%llX\n", playerGuid); OutputDebugStringA(log_buffer);
                                             }
                                         }
                                     }
                                 }
 
-                                // --- Player Pointer Lookup (using dynamically read playerGuid) ---
+                                // --- Player Pointer Lookup ---
                                 if (!lookupError && playerGuid != 0) {
                                      try {
-                                         sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] BS Check: Attempting player lookup via findObjectByGuidAndFlags: GUID=0x%llX\n", playerGuid); OutputDebugStringA(log_buffer);
-                                         pPlayer = findObjectByGuidAndFlags(playerGuid, 1); // Flag 1
-                                         sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] BS Check: Player lookup returned: 0x%p\n", pPlayer); OutputDebugStringA(log_buffer);
+                                         sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] IsBehindTarget Check: Attempting player lookup via findObjectByGuidAndFlags: GUID=0x%llX\n", playerGuid); OutputDebugStringA(log_buffer);
+                                         pPlayer = findObjectByGuidAndFlags(playerGuid, 1);
+                                         sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] IsBehindTarget Check: Player lookup returned: 0x%p\n", pPlayer); OutputDebugStringA(log_buffer);
                                          if (!pPlayer) { response_str = "[ERROR:PlayerLookup fail]"; lookupError = true; }
                                      } catch (...) {
-                                         OutputDebugStringA("[WoWInjectDLL] BS Check: CRITICAL EXCEPTION during findObjectByGuidAndFlags(playerGuid) call!\n");
+                                         OutputDebugStringA("[WoWInjectDLL] IsBehindTarget Check: CRITICAL EXCEPTION during findObjectByGuidAndFlags(playerGuid) call!\n");
                                          response_str = "[ERROR:PlayerLookup Exception]"; lookupError = true;
                                      }
                                 }
@@ -831,15 +830,15 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                                 if (!lookupError) {
                                      if (req.target_guid == 0) {
                                          response_str = "[ERROR:TargetGUID 0]"; lookupError = true;
-                                         OutputDebugStringA("[WoWInjectDLL] BS Check Error: Received Target GUID 0 from request.\n");
+                                         OutputDebugStringA("[WoWInjectDLL] IsBehindTarget Check Error: Received Target GUID 0 from request.\n");
                                      } else {
                                          try {
-                                             sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] BS Check: Attempting target lookup via findObjectByGuidAndFlags: GUID=0x%llX\n", req.target_guid); OutputDebugStringA(log_buffer);
-                                             pTarget = findObjectByGuidAndFlags(req.target_guid, 1); // Flag 1
-                                             sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] BS Check: Target lookup returned: 0x%p\n", pTarget); OutputDebugStringA(log_buffer);
+                                             sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] IsBehindTarget Check: Attempting target lookup via findObjectByGuidAndFlags: GUID=0x%llX\n", req.target_guid); OutputDebugStringA(log_buffer);
+                                             pTarget = findObjectByGuidAndFlags(req.target_guid, 1);
+                                             sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] IsBehindTarget Check: Target lookup returned: 0x%p\n", pTarget); OutputDebugStringA(log_buffer);
                                              if (!pTarget) { response_str = "[ERROR:TargetLookup fail]"; lookupError = true; }
                                          } catch (...) {
-                                             OutputDebugStringA("[WoWInjectDLL] BS Check: CRITICAL EXCEPTION during findObjectByGuidAndFlags(targetGuid) call!\n");
+                                             OutputDebugStringA("[WoWInjectDLL] IsBehindTarget Check: CRITICAL EXCEPTION during findObjectByGuidAndFlags(targetGuid) call!\n");
                                              response_str = "[ERROR:TargetLookup Exception]"; lookupError = true;
                                          }
                                      }
@@ -853,26 +852,26 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                                         bool observedInFrontHemisphere_PlayerObserver = isUnitVectorDifferenceWithinHemisphere(pPlayer, pTarget);
                                         result = (!observedInFrontHemisphere_TargetObserver && observedInFrontHemisphere_PlayerObserver);
 
-                                        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Backstab Check: TgtObs->PlayerInFront=%d, PlayerObs->TgtInFront=%d, FinalResult=%d\n",
+                                        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] IsBehindTarget Check: TgtObs->PlayerInFront=%d, PlayerObs->TgtInFront=%d, FinalResult=%d\n",
                                                   observedInFrontHemisphere_TargetObserver, observedInFrontHemisphere_PlayerObserver, result);
                                         OutputDebugStringA(log_buffer);
 
-                                        response_str = "[BS_POS_OK:";
+                                        response_str = "[IS_BEHIND_TARGET_OK:";
                                         response_str += (result ? "1" : "0");
                                         response_str += "]";
 
                                     } catch (...) {
-                                        OutputDebugStringA("[WoWInjectDLL] Backstab Check Error: Access violation during isUnitVectorDifferenceWithinHemisphere call.\n");
+                                        OutputDebugStringA("[WoWInjectDLL] IsBehindTarget Check Error: Access violation during isUnitVectorDifferenceWithinHemisphere call.\n");
                                         response_str = "[ERROR:AV checking position]";
                                     }
-                                } // else: response_str contains specific error
+                                } // else: response_str already contains the specific lookup or function pointer error message
 
                             } catch (...) {
-                                OutputDebugStringA("[WoWInjectDLL] BS Check: CRITICAL UNKNOWN EXCEPTION in outer try block!\n");
+                                OutputDebugStringA("[WoWInjectDLL] IsBehindTarget Check: CRITICAL UNKNOWN EXCEPTION in outer try block!\n");
                                 response_str = "[ERROR:Outer Exception]";
                             }
                         } // End scope for case
-                        break; // End REQ_CHECK_BACKSTAB_POS case
+                        break; // End REQ_IS_BEHIND_TARGET case
 
                     default:
                         OutputDebugStringA("[WoWInjectDLL] hkEndScene: Processing UNKNOWN request type!\n");
@@ -1187,12 +1186,11 @@ void HandleIPCCommand(const std::string& command) {
         req.type = REQ_GET_SPELL_INFO;
         sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type GET_SPELL_INFO. SpellID: %d\n", req.spell_id);
     } else if (sscanf_s(command.c_str(), "CAST_SPELL:%d,%llu", &req.spell_id, &req.target_guid) == 2) {
-        // Parse CAST_SPELL with spell ID and target GUID
         req.type = REQ_CAST_SPELL;
         sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type CAST_SPELL. SpellID: %d, TargetGUID: %llu (0x%llX)\n", req.spell_id, req.target_guid, req.target_guid);
-    } else if (sscanf_s(command.c_str(), "CHECK_BACKSTAB_POS:%llx", &req.target_guid) == 1) {
-        req.type = REQ_CHECK_BACKSTAB_POS;
-        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type CHECK_BACKSTAB_POS. TargetGUID: 0x%llX\n", req.target_guid);
+    } else if (sscanf_s(command.c_str(), "IS_BEHIND_TARGET:%llx", &req.target_guid) == 1) {
+        req.type = REQ_IS_BEHIND_TARGET;
+        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type IS_BEHIND_TARGET. TargetGUID: 0x%llX\n", req.target_guid);
     } else {
         char unit_id_buf[33] = {0};
         if (sscanf_s(command.c_str(), "IS_IN_RANGE:%d,%32s", &req.spell_id, unit_id_buf, (unsigned)_countof(unit_id_buf)) == 2) {
@@ -1201,12 +1199,6 @@ void HandleIPCCommand(const std::string& command) {
              req.spell_name.clear();
              sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type IS_IN_RANGE. SpellID: %d, UnitID: %s\n", req.spell_id, req.unit_id.c_str());
         }
-        // Remove the older CAST_SPELL parsing without GUID
-        /*else if (sscanf_s(command.c_str(), "CAST_SPELL:%d", &req.spell_id) == 1) {
-             req.type = REQ_CAST_SPELL;
-             req.target_guid = 0;
-             sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type CAST_SPELL. SpellID: %d, TargetGUID: 0\n", req.spell_id);
-        }*/
         else {
             req.type = REQ_UNKNOWN;
             sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Unknown command received: [%.100s]\n", command.c_str());

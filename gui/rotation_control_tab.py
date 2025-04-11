@@ -36,6 +36,7 @@ class RotationControlTab:
         self.start_button: Optional[ttk.Button] = None
         self.stop_button: Optional[ttk.Button] = None
         self.test_cp_button: Optional[ttk.Button] = None
+        self.test_is_behind_target_button: Optional[ttk.Button] = None
 
         # --- Build the UI for this tab ---
         self._setup_ui()
@@ -80,6 +81,15 @@ class RotationControlTab:
             state=tk.DISABLED
         )
         self.test_cp_button.pack(pady=5)
+
+        # Add Test Is Behind Target button
+        self.test_is_behind_target_button = ttk.Button(
+            test_frame,
+            text="Test Is Behind Target",
+            command=self.test_is_behind_target,
+            state=tk.DISABLED
+        )
+        self.test_is_behind_target_button.pack(pady=5)
 
         # self.populate_script_dropdown() # Removed call from here
 
@@ -190,4 +200,38 @@ class RotationControlTab:
              self.app.log_message("Warning: Combo points button 'test_cp_button' not found in RotationControlTab.", "WARNING")
 
         thread = threading.Thread(target=self.app._fetch_combo_points_thread, args=(self.test_cp_button,), daemon=True)
+        thread.start()
+
+    def test_is_behind_target(self):
+        """Initiates the process to check if player is behind target (uses app's core components)."""
+        # Check core components first
+        if not self.app.is_core_initialized():
+            messagebox.showwarning("Not Ready", "Core components not initialized or IPC not connected.")
+            return
+
+        # Check for target via IPC
+        try:
+            target_guid = self.app.game.get_target_guid()
+            if not target_guid:
+                self.app.log_message("No target detected via IPC (GetTargetGUID).", "INFO")
+                messagebox.showinfo("No Target", "You must have a target selected to test if behind target.")
+                return
+            else:
+                self.app.log_message(f"Target detected via IPC: {target_guid:#X}", "DEBUG")
+        except Exception as e:
+            self.app.log_message(f"Error checking target via IPC: {e}", "ERROR")
+            traceback.print_exc()
+            messagebox.showerror("Error", f"Error checking target status: {e}")
+            return
+
+        self.app.log_message("Target confirmed, starting Is Behind Target check thread...", "INFO")
+
+        # Disable button during test
+        if self.test_is_behind_target_button and self.test_is_behind_target_button.winfo_exists():
+            self.test_is_behind_target_button.config(state=tk.DISABLED)
+        else:
+             self.app.log_message("Warning: Is Behind Target button 'test_is_behind_target_button' not found.", "WARNING")
+
+        # Call the main app's renamed thread function
+        thread = threading.Thread(target=self.app._fetch_is_behind_target_thread, args=(target_guid, self.test_is_behind_target_button,), daemon=True)
         thread.start() 

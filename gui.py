@@ -153,6 +153,7 @@ class WowMonitorApp:
             "Player Mana % > X", "Player Combo Points >= X",
             "Target Distance < X", "Target Distance > X", "Target Has Aura",
             "Target Missing Aura", "Player Has Aura", "Player Missing Aura",
+            "Player Is Behind Target",
         ]
         self.rule_actions = ["Spell", "Macro", "Lua"]
         self.rule_targets = ["target", "player", "focus", "pet", "mouseover"]
@@ -576,6 +577,11 @@ class WowMonitorApp:
         if self.rotation_control_tab_handler.test_cp_button and self.rotation_control_tab_handler.test_cp_button.winfo_exists():
              self.rotation_control_tab_handler.test_cp_button.config(state=test_cp_state)
 
+        # --- Test Is Behind Target Button --- # Renamed comment
+        test_bs_state = tk.NORMAL if core_ready else tk.DISABLED
+        if self.rotation_control_tab_handler.test_is_behind_target_button and self.rotation_control_tab_handler.test_is_behind_target_button.winfo_exists(): # Renamed variable
+             self.rotation_control_tab_handler.test_is_behind_target_button.config(state=test_bs_state) # Renamed variable
+
     def update_data(self):
         """Periodically updates displayed data and core status."""
         # (Implementation updated to call monitor tab handler)
@@ -721,6 +727,49 @@ class WowMonitorApp:
              return -1.0
         except Exception as e:
              logging.exception(f"Unexpected Dist Calc Err: {e}"); return -1.0
+
+    def _fetch_is_behind_target_thread(self, target_guid: int, button_to_re_enable: Optional[ttk.Button]):
+        """Worker thread to check if player is behind target via IPC."""
+        position_ok = None
+        error_occurred = False
+        try:
+            if self.game:
+                position_ok = self.game.is_behind_target(target_guid)
+                if position_ok is not None:
+                    self.log_message(f"Received Is Behind Target Check via IPC: {position_ok}", "RESULT")
+                else:
+                    self.log_message("Failed to get Is Behind Target via IPC (returned None).", "WARN")
+                    error_occurred = True
+            else:
+                self.log_message("Game interface not available for Is Behind Target check.", "ERROR")
+                error_occurred = True
+        except Exception as e:
+            self.log_message(f"Exception during Is Behind Target check: {e}", "ERROR")
+            traceback.print_exc()
+            error_occurred = True
+        finally:
+            # Schedule GUI update on main thread
+            self.root.after_idle(self._show_is_behind_target_result, position_ok, button_to_re_enable, error_occurred)
+
+    def _show_is_behind_target_result(self, position_ok: Optional[bool], button_to_re_enable: Optional[ttk.Button], error_occurred: bool):
+        """Displays the Is Behind Target result and re-enables the button."""
+        if position_ok is True:
+            messagebox.showinfo("Is Behind Target", "Player IS behind target.")
+        elif position_ok is False:
+             messagebox.showwarning("Is Behind Target", "Player IS NOT behind target.")
+        elif error_occurred:
+            messagebox.showerror("Error", "Failed to check if behind target. Check logs.")
+        else:
+             messagebox.showwarning("Unknown Result", "Could not determine if behind target (IPC returned None).")
+
+        # Re-enable the button if it exists and core is initialized
+        if button_to_re_enable and button_to_re_enable.winfo_exists():
+            new_state = tk.NORMAL if self.core_initialized else tk.DISABLED
+            button_to_re_enable.config(state=new_state)
+
+    def is_core_initialized(self) -> bool:
+        """Checks if all required core components are initialized and ready."""
+        return self.core_initialized and self.mem and self.om and self.game
 
 # --- REMOVED Methods fully moved to tab classes --- #
 # - setup_monitor_tab

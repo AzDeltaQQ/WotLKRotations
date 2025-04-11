@@ -255,8 +255,8 @@ class GameInterface:
              expected_prefix = "TIME:"
         elif command.startswith("GET_CD:"):
              expected_prefix = "CD:"
-        elif command.startswith("CHECK_BACKSTAB_POS:"):
-            expected_prefix = "[BS_POS_OK:" # Expect response like [BS_POS_OK:1] or [BS_POS_OK:0]
+        elif command.startswith("IS_BEHIND_TARGET:"):
+            expected_prefix = "[IS_BEHIND_TARGET_OK:"
         # Add other command prefixes here
 
         if expected_prefix is None:
@@ -802,24 +802,25 @@ class GameInterface:
             # Attempt disconnect? Could hide original error.
             return None # Indicate unexpected error
 
-    def check_backstab_position(self, target_guid: int) -> Optional[bool]:
-        """Checks if the player is behind and facing the target via DLL command."""
+    def is_behind_target(self, target_guid: int) -> Optional[bool]:
+        """Checks if the player is behind the target via DLL command."""
         if not target_guid or not self.is_ready():
             return None
-        command = f"CHECK_BACKSTAB_POS:{target_guid:X}" # Send GUID as hex
-        print(f"[GameInterface|check_backstab_position] Sending command: {command}")
+        command = f"IS_BEHIND_TARGET:{target_guid:X}"
+        print(f"[GameInterface|is_behind_target] Sending command: {command}")
         response = self.send_receive(command)
-        print(f"[GameInterface|check_backstab_position] Raw response received: {response}")
-        if response and response.startswith("[BS_POS_OK:") and response.endswith("]"):
+        print(f"[GameInterface|is_behind_target] Raw response received: {response}")
+        prefix = "[IS_BEHIND_TARGET_OK:"
+        if response and response.startswith(prefix) and response.endswith("]"):
             try:
-                result_str = response[len("[BS_POS_OK:"):-1]
+                result_str = response[len(prefix):-1]
                 return result_str == "1"
             except Exception as e:
-                print(f"[GameInterface] Error parsing CHECK_BACKSTAB_POS response '{response}': {e}")
+                print(f"[GameInterface] Error parsing {command} response '{response}': {e}")
                 return None
         elif response:
             print(f"[GameInterface] Received unexpected response for {command}: {response}")
-        return None # Error or unexpected response
+        return None
 
 
 # --- Example Usage ---
