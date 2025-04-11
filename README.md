@@ -17,7 +17,7 @@ This project uses a two-part architecture:
     *   **Memory Handler (`memory.py`):** Uses `pymem` to attach to the WoW process and read/write memory.
     *   **Object Manager (`object_manager.py`):** Reads the WoW object list, manages a cache of `WowObject` instances, and identifies the local player and target. Reads dynamic object data like health, power, position, status flags, and known spell IDs directly from memory.
     *   **WoW Object (`wow_object.py`):** Represents game objects (players, units) and reads their properties from memory using offsets defined in `offsets.py`.
-    *   **Game Interface (`gameinterface.py`):** Manages communication with the injected C++ DLL via **Named Pipes**. Sends commands (like `EXEC_LUA`, `GET_TIME_MS`, `GET_CD`, `IS_IN_RANGE`, `GET_SPELL_INFO`, `CAST_SPELL`, `GET_TARGET_GUID`, `GET_COMBO_POINTS`) and receives responses. Handles asynchronous communication.
+    *   **Game Interface (`gameinterface.py`):** Manages communication with the injected C++ DLL via **Named Pipes**. Sends commands (like `EXEC_LUA`, `GET_TIME_MS`, `GET_CD`, `IS_IN_RANGE`, `GET_SPELL_INFO`, `CAST_SPELL`, `GET_TARGET_GUID`, `GET_COMBO_POINTS`, `CHECK_BACKSTAB_POS`) and receives responses. Handles asynchronous communication.
     *   **Combat Rotation (`combat_rotation.py`):** Engine capable of executing rotations based on prioritized rules defined in the GUI editor. Includes a `ConditionChecker` for evaluating rule conditions.
     *   **Target Selector (`targetselector.py`):** Basic framework for target selection logic.
     *   **Offsets (`offsets.py`):** Contains memory addresses and structure offsets specific to WoW 3.3.5a (12340).
@@ -26,12 +26,12 @@ This project uses a two-part architecture:
 2.  **C++ Injected DLL (`WowInjectDLL/`):**
     *   **Core Logic (`dllmain.cpp`):** Written in C++, compiled into `WowInjectDLL.dll`.
     *   **Detours Hooking:** Uses Microsoft Detours (included in `vendor/Detours`) to hook the game's `EndScene` function (DirectX 9).
-    *   **Persistent Named Pipe Server:** Creates and manages a named pipe (`\\.\pipe\WowInjectPipe`) allowing the Python GUI to reconnect without reinjecting the DLL.
-    *   **Command Handling:** Parses commands received over the pipe (e.g., `ping`, `EXEC_LUA:<code>`, `GET_TIME_MS`, `GET_CD:<id>`, `IS_IN_RANGE:<id>,<unit>`, `GET_SPELL_INFO:<id>`, `CAST_SPELL:<id>[,guid]`, `GET_TARGET_GUID`, `GET_COMBO_POINTS`).
+    *   **Persistent Named Pipe Server:** Creates and manages a named pipe (`\\.\\pipe\\WowInjectPipe`) allowing the Python GUI to reconnect without reinjecting the DLL.
+    *   **Command Handling:** Parses commands received over the pipe (e.g., `ping`, `EXEC_LUA:<code>`, `GET_TIME_MS`, `GET_CD:<id>`, `IS_IN_RANGE:<id>,<unit>`, `GET_SPELL_INFO:<id>`, `CAST_SPELL:<id>[,guid]`, `GET_TARGET_GUID`, `GET_COMBO_POINTS`, `CHECK_BACKSTAB_POS:<guid>`).
     *   **Main Thread Execution:** Queues requests and processes them within the hooked `EndScene` function.
     *   **Lua Interaction:** Uses known function pointers to execute Lua code or interact with the Lua C API (e.g., `GetTime()`, `GetSpellCooldown()`, `IsSpellInRange()`, `GetSpellInfo()`).
-    *   **Internal Function Calls:** Uses known function pointers to directly call game C functions (e.g., `CastLocalPlayerSpell`).
-    *   **Memory Reads:** Directly reads specific game data like Target GUID and Combo Points upon request from Python via pipe commands.
+    *   **Internal Function Calls:** Uses known function pointers to directly call game C functions (e.g., `CastLocalPlayerSpell`, `findObjectByGuidAndFlags`, `isUnitVectorDifferenceWithinHemisphere`).
+    *   **Memory Reads:** Directly reads specific game data like Target GUID (static address), Combo Points (static address), and Player GUID (via OM structure) upon request from Python via pipe commands.
     *   **Build System (`CMakeLists.txt`):** Uses CMake to manage the C++ build process.
 
 ## Current Features
@@ -42,9 +42,11 @@ This project uses a two-part architecture:
 *   **Object List Filtering:** GUI filter for displayed object types (Players, Units).
 *   **Persistent Named Pipe IPC:** Robust communication between Python and DLL.
 *   **Lua Execution:** Execute arbitrary Lua code via DLL (`Lua Runner` tab and rule actions).
-*   **Game State via DLL:** Get time, spell cooldowns, spell range, spell info, target GUID via pipe commands.
+*   **Game State via DLL:** Get time, spell cooldowns, spell range, spell info, target GUID (static read), combo points (static read), backstab position check (internal funcs) via pipe commands.
 *   **Spell Casting:** Cast spells via DLL (`CAST_SPELL` command or `CastSpellByID` Lua call).
-*   **Combo Points Retrieval:** Get combo points via DLL (`GET_COMBO_POINTS` command or direct memory read test button).
+*   **Combo Points Retrieval:** Get combo points via DLL (`GET_COMBO_POINTS` command).
+*   **Target GUID Retrieval:** Get target GUID via DLL (`GET_TARGET_GUID` command).
+*   **Backstab Position Check:** Check if player is behind target via DLL (`CHECK_BACKSTAB_POS` command).
 *   **Rule-Based Rotation Engine:**
     *   GUI editor (`Rotation Editor` tab) to define prioritized rules.
     *   Available Actions: `Spell`, `Macro` (not implemented), `Lua`.
@@ -125,6 +127,8 @@ This project uses a two-part architecture:
     *   Implemented resource/distance conditions (e.g., `Player Energy >= X`) with GUI input.
     *   Fixed rotation engine logic to check conditions *before* cooldowns.
     *   Added check to ensure a target exists for rules specifying "target".
+    *   Fixed `GET_TARGET_GUID` IPC command by using direct static memory read in DLL and correcting Python parsing.
+    *   Implemented `CHECK_BACKSTAB_POS` IPC command using internal game functions (`findObjectByGuidAndFlags`, `isUnitVectorDifferenceWithinHemisphere`) and dynamic player GUID reading.
 *   Rotation engine condition checking for Auras, Spell Readiness, etc., are still placeholders and need implementation (likely via Lua/DLL).
 *   The `is_attackable` check logic may need refinement based on specific unit flags.
 *   Macro execution via rules is not implemented.

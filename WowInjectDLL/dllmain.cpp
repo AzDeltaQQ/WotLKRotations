@@ -28,7 +28,8 @@ enum RequestType {
     REQ_GET_SPELL_INFO,   // New: Get spell details
     REQ_CAST_SPELL,       // New: Cast spell via internal C function
     REQ_GET_COMBO_POINTS, // New: Get combo points on target
-    REQ_GET_TARGET_GUID   // << ADDED: Get current target GUID
+    REQ_GET_TARGET_GUID,  // << ADDED: Get current target GUID
+    REQ_CHECK_BACKSTAB_POS // New: Check if player is behind target
 };
 
 // Moved struct Request definition BEFORE its usage in g_requestQueue
@@ -167,6 +168,23 @@ void SetupHook();
 void RemoveHook();
 DWORD WINAPI IPCThread(LPVOID lpParam);
 void HandleIPCCommand(const std::string& command);
+
+// --- ADDED: Placeholder ObjectManager Class (Adjust if you have a real one) ---
+// Define this properly based on your actual includes/project structure if available
+class CGObjectManager {
+public:
+    // Assume GetObjectByGuid is a virtual function or you know its offset
+    // If it's the FIRST virtual function, this simple VTable access might work.
+    // If not, you need the correct VTable index.
+    // If it's NOT virtual, you need to cast objMgr to the correct type and call directly.
+    virtual void* GetObjectByGuid(uint64_t guid) {
+        // Placeholder implementation, replace with actual call if possible
+        // This default implementation will likely fail unless overridden
+        OutputDebugStringA("[WoWInjectDLL] WARNING: Using placeholder CGObjectManager::GetObjectByGuid!\n");
+        return nullptr;
+    }
+    // Add other members as needed for correct class layout if GetObjectByGuid isn't the first vfunc
+};
 
 // --- Hooked Function ---
 HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
@@ -705,33 +723,156 @@ HRESULT WINAPI hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
                         break;
 
                     case REQ_GET_TARGET_GUID:
-                        OutputDebugStringA("[WoWInjectDLL] hkEndScene: Processing REQ_GET_TARGET_GUID (Memory Read).\n");
-                        try {
-                            // Corrected logic for WoW 3.3.5a (12340)
-                            uintptr_t objectManagerPtr = *(uintptr_t*)0x00C79CE0;
-                            if (objectManagerPtr) {
-                                // Read TargetGUID from offset 0x74 relative to the ObjectManager base pointer
-                                uint64_t targetGUID = *(uint64_t*)(objectManagerPtr + 0x74);
-                                char guid_buf[64];
-                                sprintf_s(guid_buf, sizeof(guid_buf), "TARGET_GUID:0x%llX", targetGUID);
-                                response_str = guid_buf;
-                                sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Target GUID Read (Offset 0x74): %s\n", guid_buf);
-                                OutputDebugStringA(log_buffer);
-                            } else {
-                                OutputDebugStringA("[WoWInjectDLL] ObjectManager base pointer (0x00C79CE0) is NULL. Cannot read TargetGUID.\n");
-                                response_str = "TARGET_GUID:0";
-                            }
+                        { // Use braces to scope variables
+                            OutputDebugStringA("[WoWInjectDLL] hkEndScene: Processing REQ_GET_TARGET_GUID (Direct Static Read Method).\n");
+                            uint64_t finalTargetGuid = 0;
+                            char guid_buf[128];
+                            response_str = "TARGET_GUID:ERR_UNKNOWN"; // Default error
 
-                        } catch (const std::exception& e) {
-                            std::string errorMsg = "[WoWInjectDLL] ERROR reading target GUID (exception): ";
-                            errorMsg += e.what(); errorMsg += "\n";
-                            OutputDebugStringA(errorMsg.c_str());
-                            response_str = "TARGET_GUID:ERR_EXC";
-                        } catch (...) {
-                            OutputDebugStringA("[WoWInjectDLL] CRITICAL ERROR reading target GUID: Access violation.\n");
-                            response_str = "TARGET_GUID:ERR_AV";
+                            const uint64_t TARGET_GUID_STATIC_ADDR = 0x00BD07B0; // Confirmed static address
+
+                            try {
+                                // Directly read the GUID from the static address
+                                finalTargetGuid = *(uint64_t*)TARGET_GUID_STATIC_ADDR;
+
+                                sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Target GUID read from static address 0x%llX: 0x%llX\n",
+                                          TARGET_GUID_STATIC_ADDR, finalTargetGuid);
+                                OutputDebugStringA(log_buffer);
+
+                                // Format the response string (No brackets)
+                                sprintf_s(guid_buf, sizeof(guid_buf), "TARGET_GUID:0x%llX", finalTargetGuid);
+                                response_str = guid_buf;
+
+                            } catch (const std::exception& e) {
+                                std::string errorMsg = "[WoWInjectDLL] Target GUID Static Read Error (exception): "; errorMsg += e.what(); errorMsg += "\n";
+                                OutputDebugStringA(errorMsg.c_str());
+                                sprintf_s(guid_buf, sizeof(guid_buf), "TARGET_GUID:ERR_STATIC_READ_EXCEPTION"); response_str = guid_buf;
+                            } catch (...) {
+                                // Catch potential access violations during pointer read
+                                OutputDebugStringA("[WoWInjectDLL] CRITICAL ERROR reading target GUID from static address: Access violation.\n");
+                                sprintf_s(guid_buf, sizeof(guid_buf), "TARGET_GUID:ERR_STATIC_READ_AV"); response_str = guid_buf;
+                            }
                         }
-                        break;
+                        break; // End REQ_GET_TARGET_GUID case
+
+                    case REQ_CHECK_BACKSTAB_POS:
+                        { // Use braces to scope variables
+                            OutputDebugStringA("[WoWInjectDLL] hkEndScene: Processing REQ_CHECK_BACKSTAB_POS (Internal Lookup, Dynamic Player GUID Read).\n");
+                            response_str = "[ERROR:Unknown]"; // Default error
+
+                            // Define function pointer types
+                            typedef void* (__cdecl* findObjectByGuidAndFlags_t)(uint64_t guid, int flags);
+                            typedef bool(__thiscall* IsUnitVectorDifferenceWithinHemisphereFn)(void* pThisObserver, void* pObserved);
+
+                            // Define function addresses
+                            const findObjectByGuidAndFlags_t findObjectByGuidAndFlags = (findObjectByGuidAndFlags_t)0x004D4DB0;
+                            const IsUnitVectorDifferenceWithinHemisphereFn isUnitVectorDifferenceWithinHemisphere = (IsUnitVectorDifferenceWithinHemisphereFn)0x0071BC50;
+
+                            // Define offsets and addresses needed
+                            const uintptr_t CLIENT_CONNECTION_ADDR = 0x00C79CE0;
+                            const uintptr_t OBJECT_MANAGER_OFFSET = 0x2ED0;
+                            const uintptr_t LOCAL_GUID_OFFSET = 0xC0; // Relative to ObjectManager base
+
+                            void* pPlayer = nullptr;
+                            void* pTarget = nullptr;
+                            bool lookupError = false;
+                            uint64_t playerGuid = 0; // Initialize playerGuid
+
+                            try { // Outer try block
+
+                                // Check function pointers first
+                                if (!findObjectByGuidAndFlags) {
+                                     response_str = "[ERROR:findObjectFunc null]"; lookupError = true;
+                                     OutputDebugStringA("[WoWInjectDLL] BS Check Error: findObjectByGuidAndFlags pointer is NULL.\n");
+                                }
+                                if (!isUnitVectorDifferenceWithinHemisphere) {
+                                     response_str = "[ERROR:HemisphereFunc null]"; lookupError = true;
+                                     OutputDebugStringA("[WoWInjectDLL] BS Check Error: isUnitVectorDifferenceWithinHemisphere ptr is NULL.\n");
+                                }
+
+                                // --- Get Player GUID (Dynamically via OM structure) ---
+                                if (!lookupError) {
+                                    uintptr_t clientConnection = *(uintptr_t*)CLIENT_CONNECTION_ADDR;
+                                    if (!clientConnection) {
+                                        response_str = "[ERROR:CC null for PlayerGUID]"; lookupError = true;
+                                        OutputDebugStringA("[WoWInjectDLL] BS Check Error: Client Connection NULL reading PlayerGUID.\n");
+                                    } else {
+                                        uintptr_t objMgrBase = *(uintptr_t*)(clientConnection + OBJECT_MANAGER_OFFSET);
+                                        if (!objMgrBase) {
+                                            response_str = "[ERROR:OM null for PlayerGUID]"; lookupError = true;
+                                            OutputDebugStringA("[WoWInjectDLL] BS Check Error: Object Manager Base NULL reading PlayerGUID.\n");
+                                        } else {
+                                            // Read Player GUID from OM Base + Offset
+                                            playerGuid = *(uint64_t*)(objMgrBase + LOCAL_GUID_OFFSET);
+                                            if (playerGuid == 0) {
+                                                response_str = "[ERROR:PlayerGUID 0 (Dynamic)]"; lookupError = true;
+                                                OutputDebugStringA("[WoWInjectDLL] BS Check Error: Read Player GUID as 0 from OM offset.\n");
+                                            } else {
+                                                 sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] BS Check: Dynamically read Player GUID: 0x%llX\n", playerGuid); OutputDebugStringA(log_buffer);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // --- Player Pointer Lookup (using dynamically read playerGuid) ---
+                                if (!lookupError && playerGuid != 0) {
+                                     try {
+                                         sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] BS Check: Attempting player lookup via findObjectByGuidAndFlags: GUID=0x%llX\n", playerGuid); OutputDebugStringA(log_buffer);
+                                         pPlayer = findObjectByGuidAndFlags(playerGuid, 1); // Flag 1
+                                         sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] BS Check: Player lookup returned: 0x%p\n", pPlayer); OutputDebugStringA(log_buffer);
+                                         if (!pPlayer) { response_str = "[ERROR:PlayerLookup fail]"; lookupError = true; }
+                                     } catch (...) {
+                                         OutputDebugStringA("[WoWInjectDLL] BS Check: CRITICAL EXCEPTION during findObjectByGuidAndFlags(playerGuid) call!\n");
+                                         response_str = "[ERROR:PlayerLookup Exception]"; lookupError = true;
+                                     }
+                                }
+
+                                // --- Target Pointer Lookup ---
+                                if (!lookupError) {
+                                     if (req.target_guid == 0) {
+                                         response_str = "[ERROR:TargetGUID 0]"; lookupError = true;
+                                         OutputDebugStringA("[WoWInjectDLL] BS Check Error: Received Target GUID 0 from request.\n");
+                                     } else {
+                                         try {
+                                             sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] BS Check: Attempting target lookup via findObjectByGuidAndFlags: GUID=0x%llX\n", req.target_guid); OutputDebugStringA(log_buffer);
+                                             pTarget = findObjectByGuidAndFlags(req.target_guid, 1); // Flag 1
+                                             sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] BS Check: Target lookup returned: 0x%p\n", pTarget); OutputDebugStringA(log_buffer);
+                                             if (!pTarget) { response_str = "[ERROR:TargetLookup fail]"; lookupError = true; }
+                                         } catch (...) {
+                                             OutputDebugStringA("[WoWInjectDLL] BS Check: CRITICAL EXCEPTION during findObjectByGuidAndFlags(targetGuid) call!\n");
+                                             response_str = "[ERROR:TargetLookup Exception]"; lookupError = true;
+                                         }
+                                     }
+                                }
+
+                                // --- Hemisphere Check ---
+                                if (!lookupError && pPlayer && pTarget && isUnitVectorDifferenceWithinHemisphere) {
+                                    bool result = false;
+                                    try {
+                                        bool observedInFrontHemisphere_TargetObserver = isUnitVectorDifferenceWithinHemisphere(pTarget, pPlayer);
+                                        bool observedInFrontHemisphere_PlayerObserver = isUnitVectorDifferenceWithinHemisphere(pPlayer, pTarget);
+                                        result = (!observedInFrontHemisphere_TargetObserver && observedInFrontHemisphere_PlayerObserver);
+
+                                        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Backstab Check: TgtObs->PlayerInFront=%d, PlayerObs->TgtInFront=%d, FinalResult=%d\n",
+                                                  observedInFrontHemisphere_TargetObserver, observedInFrontHemisphere_PlayerObserver, result);
+                                        OutputDebugStringA(log_buffer);
+
+                                        response_str = "[BS_POS_OK:";
+                                        response_str += (result ? "1" : "0");
+                                        response_str += "]";
+
+                                    } catch (...) {
+                                        OutputDebugStringA("[WoWInjectDLL] Backstab Check Error: Access violation during isUnitVectorDifferenceWithinHemisphere call.\n");
+                                        response_str = "[ERROR:AV checking position]";
+                                    }
+                                } // else: response_str contains specific error
+
+                            } catch (...) {
+                                OutputDebugStringA("[WoWInjectDLL] BS Check: CRITICAL UNKNOWN EXCEPTION in outer try block!\n");
+                                response_str = "[ERROR:Outer Exception]";
+                            }
+                        } // End scope for case
+                        break; // End REQ_CHECK_BACKSTAB_POS case
 
                     default:
                         OutputDebugStringA("[WoWInjectDLL] hkEndScene: Processing UNKNOWN request type!\n");
@@ -1049,8 +1190,10 @@ void HandleIPCCommand(const std::string& command) {
         // Parse CAST_SPELL with spell ID and target GUID
         req.type = REQ_CAST_SPELL;
         sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type CAST_SPELL. SpellID: %d, TargetGUID: %llu (0x%llX)\n", req.spell_id, req.target_guid, req.target_guid);
-    }
-    else {
+    } else if (sscanf_s(command.c_str(), "CHECK_BACKSTAB_POS:%llx", &req.target_guid) == 1) {
+        req.type = REQ_CHECK_BACKSTAB_POS;
+        sprintf_s(log_buffer, sizeof(log_buffer), "[WoWInjectDLL] Queued request type CHECK_BACKSTAB_POS. TargetGUID: 0x%llX\n", req.target_guid);
+    } else {
         char unit_id_buf[33] = {0};
         if (sscanf_s(command.c_str(), "IS_IN_RANGE:%d,%32s", &req.spell_id, unit_id_buf, (unsigned)_countof(unit_id_buf)) == 2) {
              req.type = REQ_IS_IN_RANGE;

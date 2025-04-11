@@ -5,7 +5,7 @@ import pymem # Keep for process finding? Maybe remove later if not needed.
 import offsets # Keep for LUA_STATE and function addrs if needed by DLL
 from memory import MemoryHandler # Keep if mem handler needed for other tasks
 # from object_manager import ObjectManager # No longer needed directly here
-from typing import Optional, List # Union, Any, List, Tuple - Removed unused
+from typing import Optional, List, Dict, Any # Union, Any, List, Tuple - Removed unused
 import traceback # Make sure traceback is imported
 import logging # Added for logging
 
@@ -255,6 +255,8 @@ class GameInterface:
              expected_prefix = "TIME:"
         elif command.startswith("GET_CD:"):
              expected_prefix = "CD:"
+        elif command.startswith("CHECK_BACKSTAB_POS:"):
+            expected_prefix = "[BS_POS_OK:" # Expect response like [BS_POS_OK:1] or [BS_POS_OK:0]
         # Add other command prefixes here
 
         if expected_prefix is None:
@@ -358,12 +360,14 @@ class GameInterface:
 
                         # Append successfully read data
                         buffer += read_buffer.raw[:bytes_actually_read.value]
+                        print(f"[GameInterface|send_receive] Raw buffer after read: {buffer}")
                         print(f"[GameInterface] Read {bytes_actually_read.value} bytes, total buffer {len(buffer)} bytes.")
 
                         # Check if buffer contains the null terminator marking end of message
                         if b'\0' in buffer:
                             message, _, remaining_buffer = buffer.partition(b'\0')
                             decoded_message = message.decode('utf-8', errors='replace').strip()
+                            print(f"[GameInterface|send_receive] Decoded message before prefix check: '{decoded_message}'")
                             print(f"[GameInterface] Received full message: [{decoded_message[:200]}...] (Remaining buffer: {len(remaining_buffer)} bytes)")
 
                             if decoded_message.startswith(expected_prefix):
@@ -760,36 +764,34 @@ class GameInterface:
         command = f"GET_TARGET_GUID"
         try:
             # Use send_receive which has timeout and pipe handling
-            response_lines = self.send_receive(command)
-            if response_lines and len(response_lines) > 0:
-                response_str = response_lines[0].strip()
+            response_str = self.send_receive(command)
+            if response_str: # Check if a non-empty string was returned
                 logging.debug(f"Received raw response for GET_TARGET_GUID: {response_str}")
 
-                # Check for the expected prefix
+                # Check for the corrected expected prefix (NO BRACKETS)
                 prefix = "TARGET_GUID:"
                 if response_str.startswith(prefix):
-                    guid_hex_str = response_str[len(prefix):]
-                    if guid_hex_str == "0": # Handle case where DLL explicitly sends 0 for no target
-                        logging.debug("get_target_guid received explicit 0 (no target).")
-                        return 0
-                    elif guid_hex_str.startswith("ERR_"): # Handle specific error codes
-                        logging.error(f"DLL reported error fetching target GUID: {guid_hex_str}")
-                        return None # Indicate error
-                    else:
+                    # Extract the hex part directly after the prefix
+                    guid_str = response_str[len(prefix):]
+                    if len(guid_str) > 0: # Check if guid string is not empty
                         try:
                             # Convert hex string (e.g., "0xABCD") to int
-                            target_guid = int(guid_hex_str, 16) 
+                            target_guid = int(guid_str, 16)
+                            # Optional: Add logging for successful parse
+                            # logging.debug(f"Successfully parsed Target GUID: {target_guid:X}")
                             return target_guid
                         except (ValueError, TypeError) as e:
-                            logging.error(f"Could not convert target GUID hex '{guid_hex_str}' to int: {e}")
+                            logging.error(f"Could not convert target GUID hex '{guid_str}' to int: {e}")
                             return None # Indicate parsing error
+                    else:
+                         logging.warning(f"Extracted GUID string is empty from response: {response_str}")
+                         return None # Empty GUID string after prefix
                 else:
                     logging.warning(f"Received unexpected response format for GET_TARGET_GUID: {response_str}")
                     return None # Unexpected format
             else:
-                # Handle cases where response is None (timeout) or empty list
-                logging.warning(f"Received no valid response for GET_TARGET_GUID (Timeout: {self.timeout_ms}ms?)")
-                return None # Indicate timeout or lack of response
+                 logging.warning(f"Received None or empty response for GET_TARGET_GUID command.")
+                 return None # No response received from send_receive
         except BrokenPipeError:
             logging.error("BrokenPipeError during get_target_guid. Pipe closed.")
             self.disconnect_pipe()
@@ -799,6 +801,25 @@ class GameInterface:
             logging.exception(f"Unexpected Python error during get_target_guid: {e}")
             # Attempt disconnect? Could hide original error.
             return None # Indicate unexpected error
+
+    def check_backstab_position(self, target_guid: int) -> Optional[bool]:
+        """Checks if the player is behind and facing the target via DLL command."""
+        if not target_guid or not self.is_ready():
+            return None
+        command = f"CHECK_BACKSTAB_POS:{target_guid:X}" # Send GUID as hex
+        print(f"[GameInterface|check_backstab_position] Sending command: {command}")
+        response = self.send_receive(command)
+        print(f"[GameInterface|check_backstab_position] Raw response received: {response}")
+        if response and response.startswith("[BS_POS_OK:") and response.endswith("]"):
+            try:
+                result_str = response[len("[BS_POS_OK:"):-1]
+                return result_str == "1"
+            except Exception as e:
+                print(f"[GameInterface] Error parsing CHECK_BACKSTAB_POS response '{response}': {e}")
+                return None
+        elif response:
+            print(f"[GameInterface] Received unexpected response for {command}: {response}")
+        return None # Error or unexpected response
 
 
 # --- Example Usage ---
