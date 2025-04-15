@@ -252,7 +252,7 @@ class GameInterface:
         elif command.startswith("EXEC_LUA:"):
             expected_prefix = "LUA_RESULT:"
         elif command.startswith("GET_TIME_MS"):
-             expected_prefix = "TIME:"
+             expected_prefix = "TIME_MS:"
         elif command.startswith("GET_CD:"):
              expected_prefix = "CD:"
         elif command.startswith("IS_BEHIND_TARGET:"):
@@ -642,11 +642,11 @@ class GameInterface:
     def get_game_time_millis(self) -> Optional[int]:
         """
         Gets the current in-game time in milliseconds by sending a GET_TIME_MS command.
-        DLL should respond with "TIME:<milliseconds>"
+        DLL should respond with "TIME_MS:<milliseconds>"
         """
         command = "GET_TIME_MS"
         response = self.send_receive(command, timeout_ms=500) # Use short timeout for time
-        if response and response.startswith("TIME:"):
+        if response and response.startswith("TIME_MS:"):
             try:
                 time_str = response.split(':')[1]
                 game_time_ms = int(time_str)

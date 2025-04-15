@@ -42,10 +42,18 @@ message(STATUS "Found Detours library: ${DETOURS_LIBRARY}")
 # --- End Detours Integration ---
 
 # Add the DLL (shared library) target
-add_library(${PROJECT_NAME} SHARED 
+add_library(${PROJECT_NAME} SHARED
     dllmain.cpp
-    pch.cpp 
-    pch.h # Include pch.h here for precompiled header generation
+    globals.cpp         # Added
+    hook_manager.cpp    # Added
+    ipc_manager.cpp     # Added
+    command_processor.cpp # Added
+    game_state.cpp      # Added
+    game_actions.cpp    # Added
+    lua_interface.cpp   # Added
+    pch.cpp
+    pch.h               # Include pch.h here for precompiled header generation
+    # Add header files? Usually not needed unless specific IDEs require it
 )
 
 # Enable Precompiled Headers RIGHT AFTER add_library

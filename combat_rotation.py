@@ -7,7 +7,7 @@ from object_manager import ObjectManager
 # from luainterface import LuaInterface # Old
 from gameinterface import GameInterface # New
 # from rules import Rule, ConditionChecker # Import rule processing - ConditionChecker removed
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 
 # Project Modules
 from wow_object import WowObject # Import for type constants like POWER_RAGE
@@ -17,10 +17,11 @@ class CombatRotation:
     Manages and executes combat rotations, either via loaded Lua scripts
     or a defined set of prioritized rules.
     """
-    def __init__(self, mem: MemoryHandler, om: ObjectManager, game: GameInterface):
+    def __init__(self, mem: MemoryHandler, om: ObjectManager, game: GameInterface, logger_func: Callable[[str, str], None]):
         self.mem = mem
         self.om = om
         self.game = game
+        self.log = logger_func # Store the passed-in logger function
         # Removed self.condition_checker - logic moved into _check_rule_conditions
         # self.rules: List[Rule] = [] # This wasn't used, app holds editor rules
         self.last_rule_execution_time: Dict[int, float] = {} # Store last time a rule (by index) was executed
@@ -257,127 +258,193 @@ class CombatRotation:
         player: WowObject, # Pass player directly
         target_obj: Optional[WowObject] # Pass resolved target object
         ) -> bool:
-        """Evaluates a single condition string with its associated values."""
+        """
+        Evaluates a single condition string with its parameters.
+        Returns True if the condition passes, False otherwise.
+        Gracefully handles missing target for target-dependent conditions.
+        """
+        # --- Initial Checks ---
+        if condition_str == "None": return True # Always passes
+        # Safety check for player object (should always exist if we got here)
+        if not player:
+             print("[ConditionEval] ERROR: Player object is None!", file=sys.stderr)
+             return False
 
-        # --- Basic Checks (Don't need target_obj) --- 
-        if condition_str == "None": return True
-        if condition_str == "Player Is Casting": return player.is_casting or player.is_channeling
-        if condition_str == "Player Is Moving": return False # Placeholder - requires velocity check
-        if condition_str == "Player Is Stealthed": return False # Placeholder - requires Aura check
+        # --- TARGET-DEPENDENT CHECKS ---
+        # Check for target existence BEFORE evaluating conditions that need it
+        target_conditions = [
+            "Target Exists", "Target Attackable", "Target Is Casting",
+            "Target HP % < X", "Target HP % > X", "Target HP % Between X-Y",
+            "Target Distance < X", "Target Distance > X", "Target Has Aura",
+            "Target Missing Aura", "Player Is Behind Target", "Player Combo Points >= X" # CP are on target
+        ]
+        if condition_str in target_conditions and target_obj is None:
+            # print(f"[ConditionEval] Skipping target condition '{condition_str}' - No target.", file=sys.stderr) # Debug Spam
+            # If the condition requires a target that doesn't exist, the condition fails.
+            # Exception: "Target Exists" should return False here, which is correct.
+            # All others requiring target properties inherently fail if no target.
+            return False # Condition fails if it needs a target and none exists
 
-        # --- Target Presence/Validity Checks --- 
-        if condition_str == "Target Exists":
-             is_valid_target = target_obj and not target_obj.is_dead
-             return is_valid_target
-        if condition_str == "Target Attackable": # Basic check
-             return target_obj and not target_obj.is_dead and target_obj.is_attackable
-
-        # --- Prerequisite: Check if target_obj is needed AND exists --- 
-        # Determine if the condition string implies a target is needed
-        needs_target = condition_str.startswith("Target") or condition_str == "Is Spell Ready" # Spell readiness often depends on target
-        if needs_target and not target_obj:
-            # print(f"[Condition] Prerequisite FAILED - Condition '{condition_str}' needs target, but it is None", file=sys.stderr)
-            return False # Cannot evaluate target conditions without a target
-
-        # --- Player Resource/State Checks (May need value_x) --- 
-        try:
-            if condition_str == "Player HP % < X":
-                if value_x is None: return False
-                return player.max_health > 0 and (player.health / player.max_health * 100) < float(value_x)
-            if condition_str == "Player HP % > X":
-                if value_x is None: return False
-                return player.max_health > 0 and (player.health / player.max_health * 100) > float(value_x)
-            if condition_str == "Player Rage >= X":
-                if value_x is None: return False
-                return player.power_type == WowObject.POWER_RAGE and player.energy >= int(value_x)
-            if condition_str == "Player Energy >= X":
-                if value_x is None: return False
-                return player.power_type == WowObject.POWER_ENERGY and player.energy >= int(value_x)
-            if condition_str == "Player Mana % < X":
-                if value_x is None: return False
-                return player.power_type == WowObject.POWER_MANA and player.max_energy > 0 and \
-                       (player.energy / player.max_energy * 100) < float(value_x)
-            if condition_str == "Player Mana % > X":
-                 if value_x is None: return False
-                 return player.power_type == WowObject.POWER_MANA and player.max_energy > 0 and \
-                        (player.energy / player.max_energy * 100) > float(value_x)
-            if condition_str == "Player Combo Points >= X":
-                 # Use GameInterface IPC call to get combo points
-                 cp = self.game.get_combo_points() if self.game else None
-                 if cp is None: return False # Cannot evaluate if unknown
-                 return cp >= value_x
-
-        except (ValueError, TypeError, ZeroDivisionError) as e:
-            print(f"[Condition] Error evaluating player condition '{condition_str}' with value '{value_x}': {e}", file=sys.stderr)
-            return False
-
-        # --- Target State Checks (Requires target_obj and possibly value_x/y/text) --- 
-        # These only run if target_obj exists (checked above)
-        if target_obj:
+        # --- PLAYER-ONLY or GAME STATE CHECKS ---
+        if condition_str == "Player Is Casting":
+            return player.is_casting or player.is_channeling # Consider channeling as casting for interrupt prevention
+        if condition_str == "Player Is Moving":
+            return player.is_moving
+        if condition_str == "Player Is Stealthed":
+             # TODO: Implement stealth check via IPC (e.g., HasAura or specific buff)
+             # self.log("Condition check 'Player Is Stealthed' needs IPC implementation.", "WARN")
+             return False # Placeholder - assume not stealthed
+        if condition_str == "Player HP % < X":
+            if value_x is None: return False
+            try: return player.health_percentage < float(value_x)
+            except: return False
+        if condition_str == "Player HP % > X":
+             if value_x is None: return False
+             try: return player.health_percentage > float(value_x)
+             except: return False
+        if condition_str == "Player Rage >= X":
+             if value_x is None: return False
+             # Check power type just in case
+             if player.power_type != WowObject.POWER_RAGE: return False
+             try: return player.energy >= int(value_x)
+             except: return False
+        if condition_str == "Player Energy >= X":
+             if value_x is None: return False
+             if player.power_type != WowObject.POWER_ENERGY: return False
+             try: return player.energy >= int(value_x)
+             except: return False
+        if condition_str == "Player Mana % < X":
+            if value_x is None: return False
+            if player.power_type != WowObject.POWER_MANA: return False
             try:
-                if condition_str == "Target Is Casting":
-                    return target_obj.is_casting or target_obj.is_channeling
-                if condition_str == "Target HP % < X":
-                    if value_x is None: return False
-                    return target_obj.max_health > 0 and (target_obj.health / target_obj.max_health * 100) < float(value_x)
-                if condition_str == "Target HP % > X":
-                    if value_x is None: return False
-                    return target_obj.max_health > 0 and (target_obj.health / target_obj.max_health * 100) > float(value_x)
-                if condition_str == "Target HP % Between X-Y":
-                    if value_x is None or value_y is None: return False
-                    if target_obj.max_health <= 0: return False
-                    current_pct = (target_obj.health / target_obj.max_health * 100)
-                    return float(value_x) <= current_pct <= float(value_y)
-                if condition_str == "Target Distance < X":
-                    if value_x is None: return False
-                    dist = player.distance_to(target_obj) # Assumes WowObject has distance_to method
-                    return dist >= 0 and dist < float(value_x)
-                if condition_str == "Target Distance > X":
-                    if value_x is None: return False
-                    dist = player.distance_to(target_obj) # Assumes WowObject has distance_to method
-                    return dist >= 0 and dist > float(value_x)
-                # --- Aura Checks (Placeholders - Need Lua/DLL implementation) --- 
-                if condition_str == "Target Has Aura":
-                    if value_text is None: return False
-                    # Placeholder: return self.game.has_aura(target_obj.guid, value_text)
-                    print(f"[Condition] Placeholder Check: Target Has Aura '{value_text}'", file=sys.stderr)
-                    return False # Assume false until implemented
-                if condition_str == "Target Missing Aura":
-                    if value_text is None: return False
-                    # Placeholder: return not self.game.has_aura(target_obj.guid, value_text)
-                    print(f"[Condition] Placeholder Check: Target Missing Aura '{value_text}'", file=sys.stderr)
-                    return True # Assume true until implemented
-
-            except (ValueError, TypeError, ZeroDivisionError) as e:
-                 print(f"[Condition] Error evaluating target condition '{condition_str}' with values x={value_x},y={value_y},text={value_text}: {e}", file=sys.stderr)
-                 return False
-
-        # --- Player Aura Checks (Placeholders - Need Lua/DLL implementation) --- 
+                # Calculate mana percentage (avoid division by zero)
+                max_mana = player.max_energy if player.max_energy else 0
+                if max_mana <= 0: return False # Cannot calculate percentage
+                mana_pct = (player.energy / max_mana) * 100
+                return mana_pct < float(value_x)
+            except: return False
+        if condition_str == "Player Mana % > X":
+            if value_x is None: return False
+            if player.power_type != WowObject.POWER_MANA: return False
+            try:
+                max_mana = player.max_energy if player.max_energy else 0
+                if max_mana <= 0: return False # Cannot calculate percentage if max is 0
+                mana_pct = (player.energy / max_mana) * 100
+                return mana_pct > float(value_x)
+            except: return False
         if condition_str == "Player Has Aura":
-             if value_text is None: return False
-             # Placeholder: return self.game.has_aura(player.guid, value_text)
-             print(f"[Condition] Placeholder Check: Player Has Aura '{value_text}'", file=sys.stderr)
-             return False # Assume false until implemented
+            if value_text is None: return False
+            # TODO: Implement HasAura check via IPC
+            # self.log(f"Condition check 'Player Has Aura: {value_text}' needs IPC implementation.", "WARN")
+            return False # Placeholder
         if condition_str == "Player Missing Aura":
-             if not target_obj or not value_text: return False # Requires target and text
-             return not self.game.has_aura(target_obj.guid, value_text)
+             if value_text is None: return False
+             # TODO: Implement HasAura check via IPC
+             # self.log(f"Condition check 'Player Missing Aura: {value_text}' needs IPC implementation.", "WARN")
+             return True # Placeholder (assume missing)
+
+        # --- TARGET-RELATED CHECKS (Only if target_obj exists) ---
+        # We already checked target_obj is not None for these conditions at the top
+        if condition_str == "Target Exists":
+            return target_obj is not None # This was already handled by the check above, but explicit check is fine
+        if condition_str == "Target Attackable":
+             # TODO: Implement IsAttackable check (flags, faction?)
+             # self.log("Condition check 'Target Attackable' needs implementation.", "WARN")
+             return target_obj is not None and not target_obj.is_dead # Basic check
+        if condition_str == "Target Is Casting":
+             return target_obj.is_casting or target_obj.is_channeling
+        if condition_str == "Target HP % < X":
+             if value_x is None: return False
+             try: return target_obj.health_percentage < float(value_x)
+             except: return False
+        if condition_str == "Target HP % > X":
+             if value_x is None: return False
+             try: return target_obj.health_percentage > float(value_x)
+             except: return False
+        if condition_str == "Target HP % Between X-Y":
+             if value_x is None or value_y is None: return False
+             try:
+                 hp_pct = target_obj.health_percentage
+                 return float(value_x) <= hp_pct <= float(value_y)
+             except: return False
+        if condition_str == "Player Combo Points >= X":
+             if value_x is None: return False
+             # Needs IPC call to get combo points (which are on the target)
+             if not self.game or not self.game.is_ready(): return False
+             # print(f"[ConditionEval] Checking Combo Points...", file=sys.stderr) # DEBUG
+             current_cp = self.game.get_combo_points()
+             # print(f"[ConditionEval] Current CP from game: {current_cp}", file=sys.stderr) # DEBUG
+             if current_cp is None: return False # Error getting CP
+             try:
+                 # print(f"[ConditionEval] Comparing {current_cp} >= {value_x}", file=sys.stderr) # DEBUG
+                 passes = current_cp >= int(value_x)
+                 # print(f"[ConditionEval] CP Comparison Result: {passes}", file=sys.stderr) # DEBUG
+                 return passes
+             except:
+                 # print(f"[ConditionEval] CP Comparison EXCEPTION", file=sys.stderr) # DEBUG
+                 return False
+        if condition_str == "Target Distance < X":
+             if value_x is None: return False
+             try:
+                  dist = self.om.calculate_distance(target_obj)
+                  return dist >= 0 and dist < float(value_x)
+             except: return False
+        if condition_str == "Target Distance > X":
+             if value_x is None: return False
+             try:
+                  dist = self.om.calculate_distance(target_obj)
+                  return dist >= 0 and dist > float(value_x)
+             except: return False
+        if condition_str == "Target Has Aura":
+             if value_text is None: return False
+             # TODO: Implement HasAura check via IPC for target
+             # self.log(f"Condition check 'Target Has Aura: {value_text}' needs IPC implementation.", "WARN")
+             return False # Placeholder
+        if condition_str == "Target Missing Aura":
+             if value_text is None: return False
+             # TODO: Implement HasAura check via IPC for target
+             # self.log(f"Condition check 'Target Missing Aura: {value_text}' needs IPC implementation.", "WARN")
+             return True # Placeholder (assume missing)
         if condition_str == "Player Is Behind Target":
-            if not target_obj: return False # Requires target
-            result = self.game.is_behind_target(target_obj.guid)
-            self.logger(f"Check Condition: {condition_str} on {target_obj.guid:X} -> {result}", "DEBUG")
-            return result if result is not None else False # Treat None as False
+             # Needs IPC call
+             if not self.game or not self.game.is_ready() or not target_obj.guid: return False
+             is_behind = self.game.is_behind_target(target_obj.guid)
+             # print(f"[ConditionEval] IsBehindTarget Check Result: {is_behind}", file=sys.stderr) # DEBUG
+             return is_behind if is_behind is not None else False
 
-        # --- Spell Readiness Check (Needs game interaction) --- 
+        # --- SPELL CHECKS ---
         if condition_str == "Is Spell Ready":
-            # This check might need the *rule* context if spell ID isn't in the condition data
-            # For now, assume spell ID needs to be passed or found elsewhere
-            print(f"[Condition] Placeholder Check: Is Spell Ready (Needs Spell ID)", file=sys.stderr)
-            return True # Assume true until implemented
+            if value_text is None: return False # Expect spell ID in text field for now
+            try:
+                spell_id = int(value_text)
+                if not self.game or not self.game.is_ready(): return False
+                # Check game cooldown
+                cd_info = self.game.get_spell_cooldown(spell_id)
+                if cd_info and not cd_info['isReady']:
+                    # print(f"[ConditionEval] Spell {spell_id} on GCD/Game CD.", file=sys.stderr)
+                    return False # On game cooldown
 
+                # Check internal cooldown (based on last execution from this engine)
+                internal_cd = rule.get("cooldown", 0.0) # Need rule context here... Pass rule?
+                if spell_id in self.last_spell_executed_time:
+                     last_exec_time = self.last_spell_executed_time[spell_id]
+                     time_since_exec = time.time() - last_exec_time
+                     if time_since_exec < internal_cd:
+                         # print(f"[ConditionEval] Spell {spell_id} on internal CD ({time_since_exec:.1f}s < {internal_cd:.1f}s).", file=sys.stderr)
+                         return False # On internal cooldown
 
-        # Fallback: Condition not recognized or target was required but None
-        print(f"Warning: Unrecognized or inapplicable condition: '{condition_str}'", file=sys.stderr)
-        return False
+                # TODO: Add mana/energy/rage check? Requires GetSpellInfo IPC call
+                # spell_info = self.game.get_spell_info(spell_id)
+                # if spell_info and player.energy < spell_info.get("cost", 0): return False
+
+                return True # Passes game CD and internal CD
+            except (ValueError, TypeError):
+                print(f"[ConditionEval] Error converting spell ID '{value_text}' to int for Is Spell Ready check.", file=sys.stderr)
+                return False
+
+        # --- Fallback ---
+        # print(f"[ConditionEval] Unknown condition string: {condition_str}", file=sys.stderr)
+        return False # Unknown condition string fails
 
     def _check_rule_cooldowns(self, rule: dict, spell_id: Optional[int]) -> bool:
         """Checks internal and game cooldowns. Returns True if ready, False if on cooldown."""

@@ -1,7 +1,22 @@
 [
     {
         "action": "Spell",
-        "detail": 2098,
+        "detail": 2589,
+        "target": "target",
+        "conditions": [
+            {
+                "condition": "Player Is Behind Target"
+            },
+            {
+                "condition": "Player Energy >= X",
+                "value_x": 60.0
+            }
+        ],
+        "cooldown": 0.0
+    },
+    {
+        "action": "Spell",
+        "detail": 6760,
         "target": "target",
         "conditions": [
             {
@@ -17,10 +32,14 @@
     },
     {
         "action": "Spell",
-        "detail": 1752,
+        "detail": 1757,
         "target": "target",
-        "condition": "Player Energy >= X",
-        "cooldown": 0.0,
-        "condition_value_x": 45.0
+        "conditions": [
+            {
+                "condition": "Player Energy >= X",
+                "value_x": 45.0
+            }
+        ],
+        "cooldown": 0.0
     }
 ]

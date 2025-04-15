@@ -345,7 +345,8 @@ class WowMonitorApp:
             if not self.combat_rotation:
                  self.log_message(f"{log_prefix} Initializing CombatRotation...", "DEBUG")
                  if self.mem and self.om and self.game:
-                     self.combat_rotation = CombatRotation(self.mem, self.om, self.game)
+                     # Pass self.log_message from the app
+                     self.combat_rotation = CombatRotation(self.mem, self.om, self.game, self.log_message)
                      self.log_message(f"{log_prefix} CombatRotation engine initialized.", "INFO")
                  else: self.log_message(f"{log_prefix} Skip CombatRotation init (core missing).", "WARN")
 
@@ -480,53 +481,6 @@ class WowMonitorApp:
             traceback.print_exc()
             messagebox.showerror("Load Error", error_msg)
 
-    # --- Combo Point Test Background Logic (Remains in App) --- #
-    def _fetch_combo_points_thread(self, button_to_re_enable: Optional[ttk.Button]):
-        """Worker thread to fetch combo points via pipe."""
-        # (Implementation remains unchanged)
-        self.log_message("Combo point thread: Started", "DEBUG")
-        combo_points = None
-        error_occurred = False
-        try:
-            if not self.game or not self.game.is_ready():
-                self.log_message("CP thread: IPC not ready.", "WARNING")
-                error_occurred = True; return
-            self.log_message("CP thread: Calling game.get_combo_points()...", "DEBUG")
-            combo_points = self.game.get_combo_points()
-            self.log_message(f"CP thread: Result: {combo_points}", "DEBUG")
-        except BrokenPipeError:
-            self.log_message("CP thread: Broken pipe.", "ERROR")
-            error_occurred = True
-        except Exception as e:
-            self.log_message(f"CP thread: Error: {e}", "ERROR")
-            traceback.print_exc(); error_occurred = True
-        finally:
-            self.log_message("CP thread: Scheduling result callback.", "DEBUG")
-            if self.root.winfo_exists():
-                self.root.after(0, self._show_combo_points_result, combo_points, button_to_re_enable, error_occurred)
-            self.log_message("CP thread: Finished.", "DEBUG")
-
-    def _show_combo_points_result(self, combo_points: Optional[int], button_to_re_enable: Optional[ttk.Button], error_occurred: bool):
-        """Displays the combo points result and re-enables button."""
-        # (Implementation remains unchanged)
-        self.log_message(f"GUI Update: CP result: {combo_points}, Error: {error_occurred}", "DEBUG")
-        if error_occurred:
-             messagebox.showerror("Error", "Failed get combo points. Check logs.")
-        elif combo_points is None:
-             self.log_message(f"Received None CP, no error.", "WARN")
-             messagebox.showerror("Error", "Received no data for combo points.")
-        elif isinstance(combo_points, int):
-            messagebox.showinfo("Combo Points", f"Current Combo Points: {combo_points}")
-        else:
-             self.log_message(f"Unexpected CP type: {type(combo_points)} - {combo_points}", "ERROR")
-             messagebox.showerror("Internal Error", f"Unexpected data for CP: {type(combo_points)}.")
-
-        if button_to_re_enable and button_to_re_enable.winfo_exists():
-            button_state = tk.NORMAL if self.core_initialized else tk.DISABLED
-            button_to_re_enable.config(state=button_state)
-        self._update_button_states()
-        self.log_message("GUI Update: CP result processed.", "DEBUG")
-
     # --- GUI Update Methods --- #
 
     def _update_button_states(self):
@@ -548,10 +502,6 @@ class WowMonitorApp:
                 rct_handler.start_button['state'] = tk.NORMAL if ipc_ready and rotation_loadable and not is_rotation_running else tk.DISABLED
             if hasattr(rct_handler, 'stop_button') and rct_handler.stop_button:
                 rct_handler.stop_button['state'] = tk.NORMAL if is_rotation_running else tk.DISABLED
-            if hasattr(rct_handler, 'test_cp_button') and rct_handler.test_cp_button:
-                current_state = str(rct_handler.test_cp_button.cget('state')) # Use cget for safety
-                is_busy = current_state == tk.DISABLED
-                rct_handler.test_cp_button['state'] = tk.NORMAL if ipc_ready and not is_busy else tk.DISABLED
             if hasattr(rct_handler, 'load_editor_rules_button') and rct_handler.load_editor_rules_button:
                  rct_handler.load_editor_rules_button['state'] = tk.NORMAL if core_ready and not is_rotation_running else tk.DISABLED
             if hasattr(rct_handler, 'script_dropdown') and rct_handler.script_dropdown:
@@ -572,15 +522,13 @@ class WowMonitorApp:
              # self.rotation_editor_tab_handler.update_button_states(core_ready, ipc_ready, is_rotation_running)
              pass # Assuming editor tab manages its state internally for now
 
-        # --- Test Combo Points Button --- #
-        test_cp_state = tk.NORMAL if core_ready else tk.DISABLED
-        if self.rotation_control_tab_handler.test_cp_button and self.rotation_control_tab_handler.test_cp_button.winfo_exists():
-             self.rotation_control_tab_handler.test_cp_button.config(state=test_cp_state)
-
-        # --- Test Is Behind Target Button --- # Renamed comment
-        test_bs_state = tk.NORMAL if core_ready else tk.DISABLED
-        if self.rotation_control_tab_handler.test_is_behind_target_button and self.rotation_control_tab_handler.test_is_behind_target_button.winfo_exists(): # Renamed variable
-             self.rotation_control_tab_handler.test_is_behind_target_button.config(state=test_bs_state) # Renamed variable
+        # --- Update new buttons via tab handlers --- #
+        if hasattr(self, 'rotation_control_tab_handler') and self.rotation_control_tab_handler:
+            rct_handler = self.rotation_control_tab_handler
+            if hasattr(rct_handler, 'test_player_stealthed_button') and rct_handler.test_player_stealthed_button:
+                 rct_handler.test_player_stealthed_button['state'] = tk.NORMAL if ipc_ready else tk.DISABLED
+            if hasattr(rct_handler, 'test_player_has_aura_button') and rct_handler.test_player_has_aura_button:
+                 rct_handler.test_player_has_aura_button['state'] = tk.NORMAL if ipc_ready else tk.DISABLED
 
     def update_data(self):
         """Periodically updates displayed data and core status."""
@@ -728,44 +676,46 @@ class WowMonitorApp:
         except Exception as e:
              logging.exception(f"Unexpected Dist Calc Err: {e}"); return -1.0
 
-    def _fetch_is_behind_target_thread(self, target_guid: int, button_to_re_enable: Optional[ttk.Button]):
-        """Worker thread to check if player is behind target via IPC."""
-        position_ok = None
-        error_occurred = False
-        try:
-            if self.game:
-                position_ok = self.game.is_behind_target(target_guid)
-                if position_ok is not None:
-                    self.log_message(f"Received Is Behind Target Check via IPC: {position_ok}", "RESULT")
-                else:
-                    self.log_message("Failed to get Is Behind Target via IPC (returned None).", "WARN")
-                    error_occurred = True
-            else:
-                self.log_message("Game interface not available for Is Behind Target check.", "ERROR")
-                error_occurred = True
-        except Exception as e:
-            self.log_message(f"Exception during Is Behind Target check: {e}", "ERROR")
-            traceback.print_exc()
-            error_occurred = True
-        finally:
-            # Schedule GUI update on main thread
-            self.root.after_idle(self._show_is_behind_target_result, position_ok, button_to_re_enable, error_occurred)
+    def test_player_stealthed(self):
+        """Placeholder for testing player stealth condition."""
+        if not self.is_core_initialized() or not self.game or not self.game.is_ready():
+            messagebox.showwarning("Not Ready", "Core components not initialized or IPC not connected.")
+            return
+        if not self.om or not self.om.local_player:
+             messagebox.showwarning("Not Ready", "Player object not found.")
+             return
 
-    def _show_is_behind_target_result(self, position_ok: Optional[bool], button_to_re_enable: Optional[ttk.Button], error_occurred: bool):
-        """Displays the Is Behind Target result and re-enables the button."""
-        if position_ok is True:
-            messagebox.showinfo("Is Behind Target", "Player IS behind target.")
-        elif position_ok is False:
-             messagebox.showwarning("Is Behind Target", "Player IS NOT behind target.")
-        elif error_occurred:
-            messagebox.showerror("Error", "Failed to check if behind target. Check logs.")
-        else:
-             messagebox.showwarning("Unknown Result", "Could not determine if behind target (IPC returned None).")
+        player = self.om.local_player
+        # Placeholder logic - needs actual check via DLL
+        self.log_message("Testing Player Stealthed (Placeholder)...", "INFO")
+        # Need: result = self.game.is_player_stealthed(player.guid)
+        # Simulate a result for now
+        is_stealthed = False # Assume False
+        messagebox.showinfo("Stealth Check (Placeholder)",
+                          f"Is Player Stealthed? {'Yes' if is_stealthed else 'No'}\n(Requires DLL update for actual check)")
 
-        # Re-enable the button if it exists and core is initialized
-        if button_to_re_enable and button_to_re_enable.winfo_exists():
-            new_state = tk.NORMAL if self.core_initialized else tk.DISABLED
-            button_to_re_enable.config(state=new_state)
+    def test_player_has_aura(self):
+        """Placeholder for testing player has aura condition."""
+        if not self.is_core_initialized() or not self.game or not self.game.is_ready():
+            messagebox.showwarning("Not Ready", "Core components not initialized or IPC not connected.")
+            return
+        if not self.om or not self.om.local_player:
+             messagebox.showwarning("Not Ready", "Player object not found.")
+             return
+
+        player = self.om.local_player
+        aura_name_or_id = simpledialog.askstring("Test Player Has Aura",
+                                               "Enter Aura Name or Spell ID:")
+        if not aura_name_or_id:
+            return # User cancelled
+
+        # Placeholder logic - needs actual check via DLL
+        self.log_message(f"Testing Player Has Aura '{aura_name_or_id}' (Placeholder)...", "INFO")
+        # Need: result = self.game.has_aura(player.guid, aura_name_or_id)
+        # Simulate a result for now
+        has_aura = False # Assume False
+        messagebox.showinfo("Aura Check (Placeholder)",
+                          f"Player Has Aura '{aura_name_or_id}'? {'Yes' if has_aura else 'No'}\n(Requires DLL update for actual check)")
 
     def is_core_initialized(self) -> bool:
         """Checks if all required core components are initialized and ready."""

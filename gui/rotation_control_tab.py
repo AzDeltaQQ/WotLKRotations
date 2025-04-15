@@ -35,8 +35,8 @@ class RotationControlTab:
         self.load_editor_rules_button: Optional[ttk.Button] = None
         self.start_button: Optional[ttk.Button] = None
         self.stop_button: Optional[ttk.Button] = None
-        self.test_cp_button: Optional[ttk.Button] = None
-        self.test_is_behind_target_button: Optional[ttk.Button] = None
+        self.test_player_stealthed_button: Optional[ttk.Button] = None
+        self.test_player_has_aura_button: Optional[ttk.Button] = None
 
         # --- Build the UI for this tab ---
         self._setup_ui()
@@ -74,22 +74,23 @@ class RotationControlTab:
         test_frame = ttk.LabelFrame(frame, text="DLL/IPC Tests", padding="10")
         test_frame.pack(pady=10, fill=tk.X)
 
-        self.test_cp_button = ttk.Button(
+        # Add Test Player Stealthed button
+        self.test_player_stealthed_button = ttk.Button(
             test_frame,
-            text="Test Get Combo Points",
-            command=self.test_get_combo_points,
+            text="Test Player Stealthed",
+            command=self._test_player_stealthed,
             state=tk.DISABLED
         )
-        self.test_cp_button.pack(pady=5)
+        self.test_player_stealthed_button.pack(side=tk.LEFT, padx=5, pady=5)
 
-        # Add Test Is Behind Target button
-        self.test_is_behind_target_button = ttk.Button(
+        # Add Test Player Has Aura button
+        self.test_player_has_aura_button = ttk.Button(
             test_frame,
-            text="Test Is Behind Target",
-            command=self.test_is_behind_target,
+            text="Test Player Has Aura",
+            command=self._test_player_has_aura,
             state=tk.DISABLED
         )
-        self.test_is_behind_target_button.pack(pady=5)
+        self.test_player_has_aura_button.pack(side=tk.LEFT, padx=5, pady=5)
 
         # self.populate_script_dropdown() # Removed call from here
 
@@ -169,69 +170,19 @@ class RotationControlTab:
             messagebox.showwarning("Load Warning", "Please select a valid rotation file.")
         self.app._update_button_states()
 
-    def test_get_combo_points(self):
-        """Initiates the process to get combo points from the target (uses app's core components)."""
-        if not self.app.game or not self.app.game.is_ready():
-            messagebox.showwarning("Not Ready", "Game interface not connected or process not found.")
-            return
-        if not self.app.om:
-             messagebox.showwarning("Not Ready", "Object Manager not initialized.")
-             return
-
-        try:
-            current_target = self.app.om.target
-            if not current_target:
-                self.app.log_message("No target detected via direct memory read (om.target).", "INFO")
-                messagebox.showinfo("No Target", "You must have a target selected to get combo points.")
-                return
-            else:
-                self.app.log_message(f"Target detected via direct memory read: {current_target.guid:#X}", "DEBUG")
-        except Exception as e:
-            self.app.log_message(f"Error checking target via om.target: {e}", "ERROR")
-            traceback.print_exc()
-            messagebox.showerror("Error", f"Error checking target status: {e}")
-            return
-
-        self.app.log_message("Target confirmed, starting combo point fetch thread...", "INFO")
-
-        if self.test_cp_button and self.test_cp_button.winfo_exists():
-            self.test_cp_button.config(state=tk.DISABLED)
-        else:
-             self.app.log_message("Warning: Combo points button 'test_cp_button' not found in RotationControlTab.", "WARNING")
-
-        thread = threading.Thread(target=self.app._fetch_combo_points_thread, args=(self.test_cp_button,), daemon=True)
-        thread.start()
-
-    def test_is_behind_target(self):
-        """Initiates the process to check if player is behind target (uses app's core components)."""
-        # Check core components first
+    # --- NEW METHODS FOR TEST BUTTONS --- #
+    def _test_player_stealthed(self):
+        """Calls the main app's method to test the stealthed condition."""
         if not self.app.is_core_initialized():
             messagebox.showwarning("Not Ready", "Core components not initialized or IPC not connected.")
             return
+        # Call the main app method (placeholder for now)
+        self.app.test_player_stealthed()
 
-        # Check for target via IPC
-        try:
-            target_guid = self.app.game.get_target_guid()
-            if not target_guid:
-                self.app.log_message("No target detected via IPC (GetTargetGUID).", "INFO")
-                messagebox.showinfo("No Target", "You must have a target selected to test if behind target.")
-                return
-            else:
-                self.app.log_message(f"Target detected via IPC: {target_guid:#X}", "DEBUG")
-        except Exception as e:
-            self.app.log_message(f"Error checking target via IPC: {e}", "ERROR")
-            traceback.print_exc()
-            messagebox.showerror("Error", f"Error checking target status: {e}")
+    def _test_player_has_aura(self):
+        """Calls the main app's method to test the player has aura condition."""
+        if not self.app.is_core_initialized():
+            messagebox.showwarning("Not Ready", "Core components not initialized or IPC not connected.")
             return
-
-        self.app.log_message("Target confirmed, starting Is Behind Target check thread...", "INFO")
-
-        # Disable button during test
-        if self.test_is_behind_target_button and self.test_is_behind_target_button.winfo_exists():
-            self.test_is_behind_target_button.config(state=tk.DISABLED)
-        else:
-             self.app.log_message("Warning: Is Behind Target button 'test_is_behind_target_button' not found.", "WARNING")
-
-        # Call the main app's renamed thread function
-        thread = threading.Thread(target=self.app._fetch_is_behind_target_thread, args=(target_guid, self.test_is_behind_target_button,), daemon=True)
-        thread.start() 
+        # Call the main app method (will ask for aura)
+        self.app.test_player_has_aura() 
