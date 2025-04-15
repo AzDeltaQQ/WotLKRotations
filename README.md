@@ -1,6 +1,6 @@
 # PyWoW Bot - WoW 3.3.5a Interaction Framework
 
-A Python and C++ experimental framework for interacting with World of Warcraft (specifically 3.3.5a - client build 12340) to monitor game state, execute Lua, and implement combat rotations using a rule-based engine.
+A Python and C++ experimental framework for interacting with World of Warcraft (specifically 3.3.5a - client build 12340) to monitor game state, execute Lua, call internal game functions, and implement combat rotations using a rule-based engine.
 
 **Disclaimer:** This project involves reading game memory, injecting DLLs, and potentially automating actions. Use entirely at your own risk. Modifying game clients or using automation tools typically violates the game's Terms of Service and could lead to account suspension. This tool is intended for educational and research purposes on private servers or sandboxed environments.
 
@@ -14,24 +14,40 @@ This project uses a two-part architecture:
         *   The UI for each tab (Monitor, Rotation Control, Rotation Editor, Lua Runner, Log) is managed by separate handler classes within the `gui/` subdirectory (e.g., `gui/monitor_tab.py` contains `MonitorTab`).
         *   These tab handlers create their specific widgets and handle tab-local logic, interacting with the main `WowMonitorApp` instance for shared data and core functionalities.
         *   Uses `tkinter` with the `sv-ttk` theme.
-    *   **Memory Handler (`memory.py`):** Uses `pymem` to attach to the WoW process and read/write memory.
+    *   **Memory Handler (`memory.py`):** Uses `pymem` to attach to the WoW process and read memory (primarily for Object Manager).
     *   **Object Manager (`object_manager.py`):** Reads the WoW object list, manages a cache of `WowObject` instances, and identifies the local player and target. Reads dynamic object data like health, power, position, status flags, and known spell IDs directly from memory.
     *   **WoW Object (`wow_object.py`):** Represents game objects (players, units) and reads their properties from memory using offsets defined in `offsets.py`.
-    *   **Game Interface (`gameinterface.py`):** Manages communication with the injected C++ DLL via **Named Pipes**. Sends commands (like `EXEC_LUA`, `GET_TIME_MS`, `GET_CD`, `IS_IN_RANGE`, `GET_SPELL_INFO`, `CAST_SPELL`, `GET_TARGET_GUID`, `GET_COMBO_POINTS`, `IS_BEHIND_TARGET`) and receives responses. Handles asynchronous communication.
-    *   **Combat Rotation (`combat_rotation.py`):** Engine capable of executing rotations based on prioritized rules defined in the GUI editor. Includes a `ConditionChecker` for evaluating rule conditions.
+    *   **Game Interface (`gameinterface.py`):** Manages communication with the injected C++ DLL via **Named Pipes**. Sends commands (see DLL features below) and receives responses. Handles connection, disconnection, and command/response formatting.
+    *   **Combat Rotation (`combat_rotation.py`):** Engine capable of executing rotations based on prioritized rules defined in the GUI editor. Evaluates conditions using data from Object Manager and Game Interface.
     *   **Target Selector (`targetselector.py`):** Basic framework for target selection logic.
     *   **Offsets (`offsets.py`):** Contains memory addresses and structure offsets specific to WoW 3.3.5a (12340).
     *   **Rules (`rules.py`):** Defines the structure for rotation rules used by the editor. Rules are saved/loaded as `.json` files in the `Rules/` directory.
 
 2.  **C++ Injected DLL (`WowInjectDLL/`):**
-    *   **Core Logic (`dllmain.cpp`):** Written in C++, compiled into `WowInjectDLL.dll`.
-    *   **Detours Hooking:** Uses Microsoft Detours (included in `vendor/Detours`) to hook the game's `EndScene` function (DirectX 9).
-    *   **Persistent Named Pipe Server:** Creates and manages a named pipe (`\\.\\pipe\\WowInjectPipe`) allowing the Python GUI to reconnect without reinjecting the DLL.
-    *   **Command Handling:** Parses commands received over the pipe (e.g., `ping`, `EXEC_LUA:<code>`, `GET_TIME_MS`, `GET_CD:<id>`, `IS_IN_RANGE:<id>,<unit>`, `GET_SPELL_INFO:<id>`, `CAST_SPELL:<id>[,guid]`, `GET_TARGET_GUID`, `GET_COMBO_POINTS`, `IS_BEHIND_TARGET:<guid>`).
-    *   **Main Thread Execution:** Queues requests and processes them within the hooked `EndScene` function.
-    *   **Lua Interaction:** Uses known function pointers to execute Lua code or interact with the Lua C API (e.g., `GetTime()`, `GetSpellCooldown()`, `IsSpellInRange()`, `GetSpellInfo()`).
-    *   **Internal Function Calls:** Uses known function pointers to directly call game C functions (e.g., `CastLocalPlayerSpell`, `findObjectByGuidAndFlags`, `isUnitVectorDifferenceWithinHemisphere`).
-    *   **Memory Reads:** Directly reads specific game data like Target GUID (static address), Combo Points (static address), and Player GUID (via OM structure) upon request from Python via pipe commands.
+    *   **Modular Design:** Code is organized into logical units:
+        *   `dllmain.cpp`: Entry point, thread initialization, basic setup/shutdown.
+        *   `globals.h`/`.cpp`: Shared variables, constants, typedefs, queues, mutex.
+        *   `pch.h`/`.cpp`: Precompiled header setup.
+        *   `offsets.h`: C++ offsets corresponding to `offsets.py`.
+        *   `ipc_manager.h`/`.cpp`: Handles the Named Pipe server thread, reads incoming commands, sends responses back to Python. Uses message-based pipe communication.
+        *   `hook_manager.h`/`.cpp`: Manages the DirectX `EndScene` hook using Detours. Dequeues requests from the IPC thread.
+        *   `command_processor.h`/`.cpp`: Contains the `ProcessCommand` function which acts as a central dispatcher based on request type. Calls appropriate functions from `game_state` or `game_actions`. Queues responses.
+        *   `lua_interface.h`/`.cpp`: Wraps interaction with WoW's Lua C API (state retrieval, pcall execution, stack manipulation).
+        *   `game_state.h`/`.cpp`: Functions for querying game state (e.g., `GetTargetGUID`, `GetComboPoints`, `IsBehindTarget`, Lua-based checks like `GetSpellCooldown`, `IsSpellInRange`).
+        *   `game_actions.h`/`.cpp`: Functions for performing actions (e.g., `CastSpell`).
+    *   **IPC Mechanism:** Uses a named pipe (`\\.\\pipe\WowInjectPipe`) for two-way communication with Python.
+        *   Python sends command strings (e.g., `EXEC_LUA:<code>`, `CAST_SPELL:<id>,<guid>`).
+        *   The DLL's `IPCThread` reads commands, uses `HandleIPCCommand` to parse and queue a `Request` struct.
+        *   The hooked `hkEndScene` function dequeues `Request` structs.
+        *   `ProcessCommand` executes the request and queues a response string (e.g., `LUA_RESULT:value`, `CAST_RESULT:<id>,<success_flag>`).
+        *   The `IPCThread` polls the response queue and sends the response string back to Python.
+    *   **Threading Model:**
+        *   **IPC Thread:** Dedicated thread for handling pipe connections, reading requests, and sending responses.
+        *   **Hook Thread (`hkEndScene`):** Runs in the game's main rendering thread. Dequeues and processes commands via `ProcessCommand`, ensuring game-related functions (Lua execution, internal calls) happen in the correct context.
+    *   **Game Interaction:**
+        *   Executes Lua code via `lua_pcall`.
+        *   Calls internal game C functions directly (`CastLocalPlayerSpell`, `findObjectByGuidAndFlags`, `isUnitVectorDifferenceWithinHemisphere`).
+        *   Reads game memory for specific static data (Target GUID, Combo Points).
     *   **Build System (`CMakeLists.txt`):** Uses CMake to manage the C++ build process.
 
 ## Current Features
@@ -40,23 +56,28 @@ This project uses a two-part architecture:
 *   **Object Management:** Iterates object list, identifies player/target, caches objects, reads known spell IDs.
 *   **Game State Monitoring:** GUI displays real-time player/target/nearby unit info (HP, Power, Pos, Status, Dist).
 *   **Object List Filtering:** GUI filter for displayed object types (Players, Units).
-*   **Persistent Named Pipe IPC:** Robust communication between Python and DLL.
-*   **Lua Execution:** Execute arbitrary Lua code via DLL (`Lua Runner` tab and rule actions).
-*   **Game State via DLL:** Get time, spell cooldowns, spell range, spell info, target GUID (static read), combo points (static read), is behind target check (internal funcs) via pipe commands.
-*   **Spell Casting:** Cast spells via DLL (`CAST_SPELL` command or `CastSpellByID` Lua call).
-*   **Combo Points Retrieval:** Get combo points via DLL (`GET_COMBO_POINTS` command).
-*   **Target GUID Retrieval:** Get target GUID via DLL (`GET_TARGET_GUID` command).
-*   **Is Behind Target Check:** Check if player is behind target via DLL (`IS_BEHIND_TARGET` command).
+*   **Named Pipe IPC:** Robust, persistent communication between Python and DLL.
+*   **DLL Command Handling:**
+    *   `ping`: Simple check.
+    *   `EXEC_LUA:<code>`: Executes Lua code, returns results.
+    *   `GET_TIME_MS`: Gets game time via Lua.
+    *   `GET_CD:<id>`: Gets spell cooldown via Lua.
+    *   `IS_IN_RANGE:<id>,<unit>`: Checks spell range via Lua.
+    *   `GET_SPELL_INFO:<id>`: Gets spell details via Lua.
+    *   `CAST_SPELL:<id>,<guid>`: Casts spell using internal C function.
+    *   `GET_TARGET_GUID`: Gets target GUID via static memory read.
+    *   `GET_COMBO_POINTS`: Gets combo points via static memory read.
+    *   `IS_BEHIND_TARGET:<guid>`: Checks positional using internal C functions.
 *   **Rule-Based Rotation Engine:**
     *   GUI editor (`Rotation Editor` tab) to define prioritized rules.
-    *   Available Actions: `Spell`, `Macro` (not implemented), `Lua`.
-    *   Available Targets: `target`, `player`, `focus`, `pet`, `mouseover`.
+    *   Available Actions: `Spell`, `Macro` (via Lua), `Lua`.
+    *   Available Targets: `target`, `player` (focus, pet, mouseover placeholders).
     *   Available Conditions:
-        *   Simple: `None`, `Target Exists`, `Target Attackable` (basic), `Player Is Casting`, `Target Is Casting`, `Player Is Moving`, `Player Is Stealthed`.
-        *   Health/Resource: `Target HP % < X`, `Target HP % > X`, `Target HP % Between X-Y`, `Player HP % < X`, `Player HP % > X`, `Player Rage >= X`, `Player Energy >= X`, `Player Mana % < X`, `Player Mana % > X`, `Player Combo Points >= X` (Requires `Condition Value (X/Y)` input).
+        *   Simple: `None`, `Target Exists`, `Target Attackable` (basic), `Player Is Casting`, `Target Is Casting`, `Player Is Moving`, `Player Is Stealthed` (placeholder).
+        *   Health/Resource: `Target HP % < X`, `Target HP % > X`, `Target HP % Between X-Y`, `Player HP % < X`, `Player HP % > X`, `Player Rage >= X`, `Player Energy >= X`, `Player Mana % < X`, `Player Mana % > X`, `Player Combo Points >= X` (via IPC).
         *   Distance: `Target Distance < X`, `Target Distance > X`.
-        *   Spell/Aura: `Is Spell Ready`, `Target Has Aura`, `Target Missing Aura`, `Player Has Aura`, `Player Missing Aura` (Requires `Name/ID` input).
-        *   Position: `Player Is Behind Target`.
+        *   Spell/Aura: `Is Spell Ready` (via IPC), `Target Has Aura` (placeholder), `Target Missing Aura` (placeholder), `Player Has Aura` (placeholder), `Player Missing Aura` (placeholder).
+        *   Position: `Player Is Behind Target` (via IPC).
     *   Condition checks happen *before* cooldown checks for efficiency.
     *   Rules targeting "target" automatically check if a target exists before proceeding.
     *   GUI supports inputting the `X/Y` or `Name/ID` values for relevant conditions.
@@ -70,10 +91,10 @@ This project uses a two-part architecture:
 
 *   **Python 3.x**
 *   **`pymem`:** (`pip install pymem`)
-*   **`sv-ttk`:** (`pip install sv-ttk`) # For GUI theme
+*   **`sv-ttk`:** (`pip install sv-ttk`)
+*   **(Optional but Recommended) `requirements.txt`:** (`pip install -r requirements.txt`)
 *   **CMake:** Build system generator (Download from [cmake.org](https://cmake.org/download/)).
-*   **C++ Compiler:** Supports C++17 (e.g., Visual Studio Community Edition with "Desktop development with C++" workload).
-*   **Microsoft Detours:** Included in the `vendor/Detours` directory (no separate install needed).
+*   **C++ Compiler:** Supports C++17 (e.g., Visual Studio Community Edition 2019+ with "Desktop development with C++" workload).
 *   **WoW Client:** Specifically version 3.3.5a (build 12340).
 *   **DLL Injector:** Tool to load `WowInjectDLL.dll` into `Wow.exe` (e.g., Process Hacker, Xenos Injector).
 
@@ -89,6 +110,7 @@ This project uses a two-part architecture:
     ```bash
     pip install -r requirements.txt
     ```
+    *(Or install `pymem` and `sv-ttk` manually)*
 
 3.  **Build the C++ DLL (`WowInjectDLL.dll`):**
     *   Ensure CMake and a C++ Compiler are installed.
@@ -108,66 +130,39 @@ This project uses a two-part architecture:
 
 4.  **Run:**
     *   Start World of Warcraft 3.3.5a (12340).
-    *   **Inject the DLL:** Use your injector to load `build/Release/WowInjectDLL.dll` into `Wow.exe`.
-    *   **(Optional):** Run DebugView as Administrator to see DLL logs.
+    *   **Inject the DLL:** Use your injector to load `build/Release/WowInjectDLL.dll` into `Wow.exe`. The DLL will establish the pipe server.
+    *   **(Optional):** Run DebugView++ (or similar) as Administrator to see DLL logs via `OutputDebugStringA`.
     *   **Run the Python GUI:**
         ```bash
         python gui.py
         ```
-    *   The GUI connects to WoW and the DLL pipe. Use the tabs to monitor, edit rules, load rules/scripts, and start/stop the rotation.
+    *   The GUI connects to WoW and the DLL pipe. Use the tabs to monitor, edit rules, load rules, and start/stop the rotation.
     *   Rules are saved/loaded to/from the `Rules/` directory (created automatically if needed).
 
 ## Development Notes & Known Issues
 
 *   Offsets are specific to WoW 3.3.5a (12340).
-*   **Recent Changes:**
-    *   Refactored GUI code into separate tab handler modules (`gui/` directory) for better organization.
-    *   Fixed various initialization errors related to GUI state and attribute access.
-    *   Improved IPC/DLL stability for cooldown/casting.
-    *   Fixed GCD handling after spell casts.
-    *   Implemented resource/distance conditions (e.g., `Player Energy >= X`) with GUI input.
-    *   Fixed rotation engine logic to check conditions *before* cooldowns.
-    *   Added check to ensure a target exists for rules specifying "target".
-    *   Fixed `GET_TARGET_GUID` IPC command by using direct static memory read in DLL and correcting Python parsing.
-    *   Implemented `IS_BEHIND_TARGET` IPC command using internal game functions (`findObjectByGuidAndFlags`, `isUnitVectorDifferenceWithinHemisphere`) and dynamic player GUID reading.
-*   Rotation engine condition checking for Auras, Spell Readiness, etc., are still placeholders and need implementation (likely via Lua/DLL).
+*   **Major Refactor Complete:** The DLL has been refactored into multiple C++ files (`ipc_manager`, `command_processor`, `hook_manager`, etc.). Direct Python memory access for game functions/state has been replaced by Named Pipe IPC calls handled by the DLL.
+*   Rotation engine condition checking for Auras, Spell Readiness (resource cost), Player Stealth are still placeholders and need implementation via new IPC commands.
 *   The `is_attackable` check logic may need refinement based on specific unit flags.
-*   Macro execution via rules is not implemented.
+*   Macro execution (`RunMacroText`) is implemented via Lua.
 
 ## Deprecated Features (Replaced by DLL/IPC)
 
 *   Direct Python shellcode injection.
-*   Direct memory reads from Python for cooldowns, range, time (replaced by DLL calls).
+*   Direct Python memory reads/writes for calling game functions or getting state like cooldowns, time, range (replaced by DLL IPC commands).
 
 ## Next Steps (Potential):
 
-1.  Implement Aura and Spell Readiness condition checks via Lua/DLL.
-2.  Add more game interaction functions to the DLL (TargetUnit, GetAuraInfo, Interact, etc.).
-3.  Implement reliable GCD tracking (e.g., via Lua `GetSpellCooldown`).
-4.  Refine `is_attackable` logic.
-5.  Add macro execution.
-
-## Setup:
-
-1.  Ensure Python 3 is installed.
-2.  Install required library: `pip install pymem`
-3.  Ensure WoW 3.3.5a (client build 12340) is running.
-4.  Run the GUI: `python gui.py`
-
-## Setup
-
-1.  **Requirements:**
-    *   Python 3.x
-    *   `pywin32` (`pip install pywin32`)
-    *   `psutil` (`pip install psutil`)
-    *   `sv-ttk` (`pip install sv-ttk`) # For the GUI theme
-    *   A C++ compiler supporting C++17 (e.g., Visual Studio with CMake integration).
-    *   CMake.
-    *   Detours library (submoduled or placed in a known location for CMake).
+1.  Implement Aura and Stealth condition checks via Lua/DLL.
+2.  Add resource checks (Mana/Energy/Rage) to `Is Spell Ready` condition.
+3.  Add more game interaction functions to the DLL (TargetUnit, Interact, etc.).
+4.  Implement reliable GCD tracking (e.g., via Lua `GetSpellCooldown`).
+5.  Refine `is_attackable` logic.
 
 ### Rotation Editor Tab
 
-The Rotation Editor allows you to define sequences of actions (casting spells, using macros, running Lua) based on specific conditions. Rules are evaluated top-down, and the first rule whose conditions are met will have its action executed.
+The Rotation Editor allows you to define sequences of actions (casting spells, running macros via Lua, running Lua) based on specific conditions. Rules are evaluated top-down, and the first rule whose conditions are met will have its action executed.
 
 #### Multiple Conditions per Rule
 *   **AND Logic:** You can now add multiple conditions to a single rule. The rule will only execute if *all* of its conditions evaluate to true.
@@ -180,9 +175,9 @@ Rules are saved in JSON format (e.g., in the `Rules/` directory). Here's an exam
 ```json
 [
   {
-    "action": "Spell", 
+    "action": "Spell",
     "detail": 2098,      # Spell ID (e.g., Eviscerate)
-    "target": "target", 
+    "target": "target",
     "conditions": [     # List of conditions (AND logic)
       {
         "condition": "Player Energy >= X",
@@ -221,26 +216,8 @@ Rules are saved in JSON format (e.g., in the `Rules/` directory). Here's an exam
 
 ### Lua Runner Tab
 
-The Lua Runner tab allows you to execute arbitrary Lua code directly from the GUI. This is useful for testing Lua scripts or running custom Lua code without needing to create a rule.
+The Lua Runner tab allows you to execute arbitrary Lua code directly from the GUI via the DLL. This is useful for testing Lua scripts or running custom Lua code without needing to create a rule.
 
 *   **Lua Code Input:** Enter the Lua code you want to execute in the text area.
-*   **Execute:** Click the 'Execute' button to run the Lua code.
-*   **Output:** The result of the Lua execution will be displayed in the output area below the text area.
-
-## Setup:
-
-1.  Ensure Python 3 is installed.
-2.  Install required library: `pip install pymem`
-3.  Ensure WoW 3.3.5a (client build 12340) is running.
-4.  Run the GUI: `python gui.py`
-
-## Setup
-
-1.  **Requirements:**
-    *   Python 3.x
-    *   `pywin32` (`pip install pywin32`)
-    *   `psutil` (`pip install psutil`)
-    *   `sv-ttk` (`pip install sv-ttk`) # For the GUI theme
-    *   A C++ compiler supporting C++17 (e.g., Visual Studio with CMake integration).
-    *   CMake.
-    *   Detours library (submoduled or placed in a known location for CMake). 
+*   **Execute:** Click the 'Run Lua Code' button to send the code to the DLL for execution.
+*   **Output:** The result(s) returned by the Lua execution (via the DLL) will be displayed in the output area. 
