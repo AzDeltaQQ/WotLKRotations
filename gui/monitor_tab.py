@@ -11,24 +11,28 @@ from wow_object import WowObject
 if TYPE_CHECKING:
     from gui import WowMonitorApp # Import from the main gui module
 
-
-class MonitorTab:
+# Restore ttk.Frame inheritance
+class MonitorTab(ttk.Frame):
     """Handles the UI and logic for the Monitor Tab."""
 
-    def __init__(self, parent_notebook: ttk.Notebook, app_instance: 'WowMonitorApp'):
+    # Restore __init__ signature and super call
+    def __init__(self, parent_notebook: ttk.Notebook, app_instance: 'WowMonitorApp', **kwargs):
         """
         Initializes the Monitor Tab.
 
         Args:
-            parent_notebook: The ttk.Notebook widget to attach the tab frame to.
+            parent_notebook: The ttk.Notebook widget this frame will be placed in.
             app_instance: The instance of the main WowMonitorApp.
         """
-        self.app = app_instance
-        self.notebook = parent_notebook
+        # Restore super().__init__() call, passing parent_notebook
+        super().__init__(parent_notebook, **kwargs)
 
-        # Create the main frame for this tab
-        self.tab_frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_frame, text='Monitor')
+        self.app = app_instance
+        # Remove notebook reference and internal frame creation
+        # self.notebook = parent_notebook
+        # self.tab_frame = ttk.Frame(self.notebook)
+        # Remove the add call from here
+        # self.notebook.add(self.tab_frame, text='Monitor')
 
         # --- Define Monitor specific widgets ---
         self.tree: Optional[ttk.Treeview] = None
@@ -41,10 +45,10 @@ class MonitorTab:
 
     def _setup_ui(self):
         """Creates the widgets for the Monitor tab."""
-        # Use self.tab_frame as the parent for widgets in this tab
+        # Use self as the parent frame
 
         # --- Status Info Frame --- (Uses StringVars from self.app)
-        info_frame = ttk.LabelFrame(self.tab_frame, text="Status", padding=(10, 5))
+        info_frame = ttk.LabelFrame(self, text="Status", padding=(10, 5))
         info_frame.pack(pady=(5,10), padx=5, fill=tk.X)
         info_frame.columnconfigure(1, weight=1)
         ttk.Label(info_frame, text="Player:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=1)
@@ -76,7 +80,7 @@ class MonitorTab:
         ttk.Label(info_frame, textvariable=self.app.target_dist_var).grid(row=13, column=1, sticky=tk.W, padx=5, pady=1)
 
         # --- Nearby Units Frame with Filter Button --- (Uses BOLD_FONT from self.app)
-        list_outer_frame = ttk.Frame(self.tab_frame)
+        list_outer_frame = ttk.Frame(self)
         list_outer_frame.pack(pady=5, padx=5, fill=tk.BOTH, expand=True)
 
         list_header_frame = ttk.Frame(list_outer_frame)

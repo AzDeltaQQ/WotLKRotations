@@ -123,23 +123,23 @@ class LogRedirector:
             print("LogRedirector: Standard output restored.", file=self.stderr_orig) # Log deactivation
 
 
-class LogTab:
+class LogTab(ttk.Frame):
     """Handles the UI and logic for the Log Tab."""
 
-    def __init__(self, parent_notebook: ttk.Notebook, app_instance: 'WowMonitorApp'):
+    def __init__(self, parent_notebook: ttk.Notebook, app_instance: 'WowMonitorApp', **kwargs):
         """
         Initializes the Log Tab.
 
         Args:
-            parent_notebook: The ttk.Notebook widget to attach the tab frame to.
+            parent_notebook: The ttk.Notebook widget this frame will be placed in.
             app_instance: The instance of the main WowMonitorApp.
         """
+        super().__init__(parent_notebook, **kwargs)
         self.app = app_instance
-        self.notebook = parent_notebook
-
-        # Create the main frame for this tab
-        self.tab_frame = ttk.Frame(self.notebook) # Use self.tab_frame as the parent for widgets
-        self.notebook.add(self.tab_frame, text='Log')
+        # Remove internal frame creation/add
+        # self.notebook = parent_notebook
+        # self.tab_frame = ttk.Frame(self.notebook) # Use self.tab_frame as the parent for widgets
+        # self.notebook.add(self.tab_frame, text='Log')
 
         # --- Define Log specific widgets ---
         self.log_text: Optional[scrolledtext.ScrolledText] = None
@@ -162,8 +162,8 @@ class LogTab:
 
     def _setup_ui(self):
         """Creates the widgets for the Log tab."""
-        # Use self.tab_frame as the parent for the LabelFrame and other widgets
-        log_frame = ttk.LabelFrame(self.tab_frame, text="Log Output", padding=(10, 5))
+        # Use self as the parent
+        log_frame = ttk.LabelFrame(self, text="Log Output", padding=(10, 5))
         log_frame.pack(expand=True, fill=tk.BOTH, padx=5, pady=5)
         log_frame.rowconfigure(0, weight=1)
         log_frame.columnconfigure(0, weight=1)

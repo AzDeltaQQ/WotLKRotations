@@ -20,6 +20,7 @@ from wow_object import WowObject
 from combat_rotation import CombatRotation
 from rules import Rule # Keep Rule for potential type hints if needed
 from targetselector import TargetSelector
+from combat_log_reader import CombatLogReader # <-- Import CombatLogReader
 
 # Import Tab Handlers
 from gui.monitor_tab import MonitorTab
@@ -27,6 +28,7 @@ from gui.rotation_control_tab import RotationControlTab
 from gui.rotation_editor_tab import RotationEditorTab
 from gui.lua_runner_tab import LuaRunnerTab
 from gui.log_tab import LogTab # LogRedirector is now defined within log_tab.py
+from gui.combat_log_tab import CombatLogTab # <-- Import CombatLogTab
 
 # Use TYPE_CHECKING for the tab handler types to avoid runtime circular dependency issues
 if TYPE_CHECKING:
@@ -36,6 +38,7 @@ if TYPE_CHECKING:
     from gui.rotation_editor_tab import RotationEditorTab
     from gui.lua_runner_tab import LuaRunnerTab
     from gui.log_tab import LogTab
+    from gui.combat_log_tab import CombatLogTab # <-- Add CombatLogTab type hint
 
 # Constants
 UPDATE_INTERVAL_MS = 250 # How often to update GUI data (milliseconds)
@@ -84,6 +87,7 @@ class WowMonitorApp:
 
     def __init__(self, root):
         self.root = root
+        self.root.title("PyWoW Bot Interface") # Set title early
 
         # --- Style Application --- (Store on instance for tabs to access)
         self.DEFAULT_FONT = DEFAULT_FONT
@@ -170,6 +174,9 @@ class WowMonitorApp:
         self.lua_code_var = tk.StringVar()
         self.macro_text_var = tk.StringVar()
 
+        # This list holds the rules CURRENTLY IN THE EDITOR, not the engine
+        self.rotation_rules: List[Dict[str, Any]] = []
+
         # --- Instantiate Tab Handlers --- #
         # Provide type hints using TYPE_CHECKING block above
         self.monitor_tab_handler: 'MonitorTab' = MonitorTab(self.notebook, self)
@@ -178,6 +185,7 @@ class WowMonitorApp:
         self.lua_runner_tab_handler: 'LuaRunnerTab' = LuaRunnerTab(self.notebook, self)
         # LogTab creates its own LogRedirector and starts redirection internally
         self.log_tab_handler: 'LogTab' = LogTab(self.notebook, self)
+        self.combat_log_tab_handler: 'CombatLogTab' = CombatLogTab(self.notebook, self) # <-- Instantiate CombatLogTab
 
         # --- Initialize Core Components --- #
         self.mem: Optional[MemoryHandler] = None
@@ -185,9 +193,8 @@ class WowMonitorApp:
         self.game: Optional[GameInterface] = None
         self.combat_rotation: Optional[CombatRotation] = None
         self.target_selector: Optional[TargetSelector] = None
+        self.combat_log_reader: Optional[CombatLogReader] = None # <-- Add instance var
         self.rotation_running = False
-        # This list holds the rules CURRENTLY IN THE EDITOR, not the engine
-        self.rotation_rules: List[Dict[str, Any]] = []
         # loaded_script_path is likely for config saving, keep it for now
         self.loaded_script_path = self.config.get('Rotation', 'last_script', fallback=None)
         self.update_job = None
@@ -219,6 +226,23 @@ class WowMonitorApp:
         else:
              print("ERROR: LogTab handler not ready, cannot log startup message.", file=sys.stderr)
         self.update_data() # Start the main update cycle
+
+        # --- Add Tabs to Notebook (Original location) ---
+        # Test: Add a simple frame first # REMOVED SECTION
+        # try:
+        #     test_frame = ttk.Frame(self.notebook)
+        #     self.notebook.add(test_frame, text="Test")
+        #     print("Successfully added test frame.")
+        # except Exception as e:
+        #     print(f"ERROR adding test frame: {e}")
+        #     # If this fails, the problem is more fundamental
+
+        self.notebook.add(self.monitor_tab_handler, text='Monitor')
+        self.notebook.add(self.rotation_control_tab_handler, text='Rotation Control / Test')
+        self.notebook.add(self.rotation_editor_tab_handler, text='Rotation Editor')
+        self.notebook.add(self.lua_runner_tab_handler, text='Lua Runner')
+        self.notebook.add(self.log_tab_handler, text='Log')
+        self.notebook.add(self.combat_log_tab_handler, text='Combat Log') # <-- Add CombatLogTab to notebook
 
     # --- Logging Method --- #
     def log_message(self, message, tag="INFO"):
@@ -311,6 +335,17 @@ class WowMonitorApp:
                     self.log_message(f"{log_prefix} Failed attach ({PROCESS_NAME}). WoW running?", "ERROR")
                     return False
                 self.log_message(f"{log_prefix} Attached to WoW process.", "INFO")
+
+                # 1.5 Initialize Combat Log Reader (Needs MemoryHandler)
+                if not self.combat_log_reader:
+                    self.log_message(f"{log_prefix} Initializing CombatLogReader...", "DEBUG")
+                    self.combat_log_reader = CombatLogReader(self.mem)
+                    if self.combat_log_reader.initialized:
+                        self.log_message(f"{log_prefix} CombatLogReader initialized.", "INFO")
+                    else:
+                        self.log_message(f"{log_prefix} CombatLogReader failed initialization.", "WARN")
+                        # Don't fail core init just because log reader failed, but log it.
+
             # 2. Object Manager
             if not self.om or not self.om.is_ready():
                 self.log_message(f"{log_prefix} Initializing ObjectManager...", "DEBUG")
@@ -486,12 +521,14 @@ class WowMonitorApp:
     def _update_button_states(self):
         """Updates the state of buttons based on application state."""
         # (Implementation updated to access buttons via handlers)
-        core_ready = self.core_initialized and self.mem and self.om and self.game
-        ipc_ready = core_ready and self.game.is_ready()
-        rules_in_engine = bool(self.combat_rotation and self.combat_rotation.rotation_rules)
-        script_in_engine = bool(self.combat_rotation and self.combat_rotation.lua_script_content)
+        core_ready = self.is_core_initialized()
+        ipc_ready = core_ready and self.game and self.game.is_ready()
+        # Safely check if combat_rotation exists before accessing its attributes
+        rules_in_engine = bool(hasattr(self, 'combat_rotation') and self.combat_rotation and self.combat_rotation.rotation_rules)
+        script_in_engine = bool(hasattr(self, 'combat_rotation') and self.combat_rotation and self.combat_rotation.lua_script_content)
         rotation_loadable = rules_in_engine or script_in_engine
-        is_rotation_running = self.rotation_thread is not None and self.rotation_thread.is_alive()
+        # Safely check if rotation_thread exists before accessing it
+        is_rotation_running = hasattr(self, 'rotation_thread') and self.rotation_thread is not None and self.rotation_thread.is_alive()
 
         # --- Update buttons via tab handlers --- #
         # Rotation Control Tab
@@ -605,6 +642,26 @@ class WowMonitorApp:
         # --- Update Object Tree via MonitorTab handler --- #
         if core_ready and hasattr(self, 'monitor_tab_handler') and self.monitor_tab_handler:
             self.monitor_tab_handler.update_monitor_treeview()
+
+        # --- Read and Display Combat Log Entries --- #
+        if core_ready and self.combat_log_reader and self.combat_log_reader.initialized and hasattr(self, 'combat_log_tab_handler'):
+            try:
+                for timestamp, raw_data in self.combat_log_reader.read_new_entries():
+                    # TODO: Implement parsing of raw_data based on event type
+                    # For now, just display timestamp and raw data indication
+                    # Convert raw_data to hex for display if needed
+                    # data_hex = raw_data.hex()[:60] # Show first 30 bytes
+                    placeholder_event = {
+                        "timestamp": timestamp, # Assuming timestamp is readable directly
+                        "event_type": "RAW_DATA",
+                        "source_name": f"Node@{self.combat_log_reader.last_read_node_addr:#x}", # Show node addr
+                        "dest_name": f"{len(raw_data)} bytes"
+                        # Add more fields as parsing develops
+                    }
+                    self.combat_log_tab_handler.log_event(placeholder_event)
+            except Exception as e:
+                self.log_message(f"Error reading/processing combat log: {e}", "ERROR")
+                # traceback.print_exc() # Optionally log full traceback
 
         # --- Final Updates --- #
         self.status_var.set(status_text)
@@ -733,7 +790,12 @@ class WowMonitorApp:
 
     def is_core_initialized(self) -> bool:
         """Checks if all required core components are initialized and ready."""
-        return self.core_initialized and self.mem and self.om and self.game
+        # Check components directly and safely
+        mem_ready = hasattr(self, 'mem') and self.mem is not None and self.mem.is_attached()
+        om_ready = hasattr(self, 'om') and self.om is not None and self.om.is_ready()
+        game_ready = hasattr(self, 'game') and self.game is not None # GameInterface doesn't have an is_ready() for init, only for pipe.
+        # Consider adding self.combat_rotation check if it's essential for 'core' state
+        return mem_ready and om_ready and game_ready
 
 # --- REMOVED Methods fully moved to tab classes --- #
 # - setup_monitor_tab

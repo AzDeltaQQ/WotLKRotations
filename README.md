@@ -11,7 +11,7 @@ This project uses a two-part architecture:
 1.  **Python Frontend & Core Logic:**
     *   **GUI (`gui.py` & `gui/` directory):**
         *   The main application logic resides in `gui.py` (`WowMonitorApp` class). It handles window creation, core component initialization (memory, objects, game interface, rotation engine), the main update loop, status bar, configuration, and shared state/variables.
-        *   The UI for each tab (Monitor, Rotation Control, Rotation Editor, Lua Runner, Log) is managed by separate handler classes within the `gui/` subdirectory (e.g., `gui/monitor_tab.py` contains `MonitorTab`).
+        *   The UI for each tab (Monitor, Rotation Control, Rotation Editor, Lua Runner, Log, **Combat Log**) is managed by separate handler classes within the `gui/` subdirectory (e.g., `gui/monitor_tab.py` contains `MonitorTab`).
         *   These tab handlers create their specific widgets and handle tab-local logic, interacting with the main `WowMonitorApp` instance for shared data and core functionalities.
         *   Uses `tkinter` with the `sv-ttk` theme.
     *   **Memory Handler (`memory.py`):** Uses `pymem` to attach to the WoW process and read memory (primarily for Object Manager).
@@ -20,6 +20,7 @@ This project uses a two-part architecture:
     *   **Game Interface (`gameinterface.py`):** Manages communication with the injected C++ DLL via **Named Pipes**. Sends commands (see DLL features below) and receives responses. Handles connection, disconnection, and command/response formatting.
     *   **Combat Rotation (`combat_rotation.py`):** Engine capable of executing rotations based on prioritized rules defined in the GUI editor. Evaluates conditions using data from Object Manager and Game Interface.
     *   **Target Selector (`targetselector.py`):** Basic framework for target selection logic.
+    *   **Combat Log Reader (`combat_log_reader.py`):** Reads WoW's internal combat log data structures from memory.
     *   **Offsets (`offsets.py`):** Contains memory addresses and structure offsets specific to WoW 3.3.5a (12340).
     *   **Rules (`rules.py`):** Defines the structure for rotation rules used by the editor. Rules are saved/loaded as `.json` files in the `Rules/` directory.
 
@@ -56,6 +57,7 @@ This project uses a two-part architecture:
 *   **Object Management:** Iterates object list, identifies player/target, caches objects, reads known spell IDs.
 *   **Game State Monitoring:** GUI displays real-time player/target/nearby unit info (HP, Power, Pos, Status, Dist).
 *   **Object List Filtering:** GUI filter for displayed object types (Players, Units).
+*   **Combat Log Reader & Tab:** Experimental reader for WoW's internal combat log data structures and a GUI tab to display raw event data.
 *   **Named Pipe IPC:** Robust, persistent communication between Python and DLL.
 *   **DLL Command Handling:**
     *   `ping`: Simple check.
@@ -86,6 +88,11 @@ This project uses a two-part architecture:
 *   **GUI Controls:** Test buttons for key DLL functions.
 *   **Logging:** GUI Log tab captures output. DLL uses `OutputDebugStringA`.
 *   **Spellbook Scanner & Lookup:** GUI utilities.
+*   **Aura/Stealth Checks Implemented:** Conditions `Player Has Aura`, `Player Missing Aura`, `Target Has Aura`, `Target Missing Aura`, and `Player Is Stealthed` are now implemented using direct memory reads in Python.
+*   Rotation engine condition checking for Spell Readiness (resource cost) is still needed.
+*   The `is_attackable` check logic may need refinement based on specific unit flags.
+*   Macro execution (`RunMacroText`) is implemented via Lua.
+*   **Combat Log Reader is experimental and currently gets stuck initializing.**
 
 ## Dependencies
 

@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 import os
 import threading
 import json
@@ -11,25 +11,21 @@ if TYPE_CHECKING:
     from gui import WowMonitorApp
 
 
-class RotationControlTab:
+class RotationControlTab(ttk.Frame):
     """Handles the UI and logic for the Rotation Control Tab."""
 
-    def __init__(self, parent_notebook: ttk.Notebook, app_instance: 'WowMonitorApp'):
+    def __init__(self, parent_notebook: ttk.Notebook, app_instance: 'WowMonitorApp', **kwargs):
         """
         Initializes the Rotation Control Tab.
 
         Args:
-            parent_notebook: The ttk.Notebook widget to attach the tab frame to.
+            parent_notebook: The ttk.Notebook widget this frame will be placed in.
             app_instance: The instance of the main WowMonitorApp.
         """
+        super().__init__(parent_notebook, **kwargs)
         self.app = app_instance
-        self.notebook = parent_notebook
 
-        # Create the main frame for this tab
-        self.tab_frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_frame, text='Rotation Control / Test')
-
-        # --- Define Rotation Control specific widgets ---
+        # --- Widgets (Define attributes that will be created in _setup_ui) ---
         self.script_dropdown: Optional[ttk.Combobox] = None
         self.refresh_button: Optional[ttk.Button] = None
         self.load_editor_rules_button: Optional[ttk.Button] = None
@@ -37,16 +33,18 @@ class RotationControlTab:
         self.stop_button: Optional[ttk.Button] = None
         self.test_player_stealthed_button: Optional[ttk.Button] = None
         self.test_player_has_aura_button: Optional[ttk.Button] = None
+        self.test_combo_points_button: Optional[ttk.Button] = None
+        self.test_is_behind_button: Optional[ttk.Button] = None
 
         # --- Build the UI for this tab ---
         self._setup_ui()
 
-        # --- Initial population ---
-        # self.populate_script_dropdown() # Moved call to end of _setup_ui
+        # --- Populate Initial State --- #
+        self.populate_script_dropdown()
 
     def _setup_ui(self):
         """Creates the widgets for the Rotation Control tab."""
-        frame = ttk.Frame(self.tab_frame, padding="10")
+        frame = ttk.Frame(self, padding="10")
         frame.pack(fill=tk.BOTH, expand=True)
 
         control_frame = ttk.LabelFrame(frame, text="Rotation Control", padding="10")
@@ -74,6 +72,13 @@ class RotationControlTab:
         test_frame = ttk.LabelFrame(frame, text="DLL/IPC Tests", padding="10")
         test_frame.pack(pady=10, fill=tk.X)
 
+        test_button_frame = ttk.Frame(test_frame)
+        self.test_combo_points_button = ttk.Button(test_button_frame, text="Test Get CP", command=self.test_get_combo_points)
+        self.test_combo_points_button.pack(side=tk.LEFT, padx=5, pady=5)
+
+        self.test_is_behind_button = ttk.Button(test_button_frame, text="Test Is Behind", command=self.test_is_behind)
+        self.test_is_behind_button.pack(side=tk.LEFT, padx=5, pady=5)
+
         # Add Test Player Stealthed button
         self.test_player_stealthed_button = ttk.Button(
             test_frame,
@@ -91,8 +96,6 @@ class RotationControlTab:
             state=tk.DISABLED
         )
         self.test_player_has_aura_button.pack(side=tk.LEFT, padx=5, pady=5)
-
-        # self.populate_script_dropdown() # Removed call from here
 
     def populate_script_dropdown(self):
         """Populates the rotation script dropdown with files from the Rules directory."""
@@ -185,4 +188,64 @@ class RotationControlTab:
             messagebox.showwarning("Not Ready", "Core components not initialized or IPC not connected.")
             return
         # Call the main app method (will ask for aura)
-        self.app.test_player_has_aura() 
+        self.app.test_player_has_aura()
+
+    def test_get_combo_points(self):
+        """Tests the Get Combo Points IPC command."""
+        if not self.app.is_core_initialized():
+            messagebox.showwarning("Not Ready", "Core components not initialized or IPC not connected.")
+            return
+        try:
+            if hasattr(self.app, 'core_initialized') and self.app.core_initialized:
+                if hasattr(self, 'script_dropdown') and self.script_dropdown:
+                    selected_file = self.script_dropdown.get()
+                    if selected_file:
+                        script_path = os.path.join("Rules", selected_file)
+                        if self.app.combat_rotation.load_rotation_script(script_path):
+                            self.app.loaded_script_path = selected_file
+                            self.app.log_message(f"Loaded rotation script '{selected_file}' into engine.", "INFO")
+                            messagebox.showinfo("Test Result", "Get CP test successful!")
+                        else:
+                            messagebox.showerror("Test Error", "Failed to load rotation script.")
+                    else:
+                        messagebox.showerror("Invalid Input", "Please select a rotation file.")
+                else:
+                    messagebox.showerror("Invalid Input", "Script dropdown not initialized.")
+            else:
+                messagebox.showerror("Invalid Input", "Core not initialized.")
+        except ValueError:
+            messagebox.showerror("Invalid Input", "Please enter a valid integer Spell ID.")
+        except Exception as e:
+            error_msg = f"Error during Get CP test: {e}"
+            self.app.log_message(error_msg, "ERROR")
+            messagebox.showerror("Test Error", error_msg)
+
+    def test_is_behind(self):
+        """Tests the IS_BEHIND_TARGET IPC command."""
+        if not self.app.is_core_initialized():
+            messagebox.showwarning("Not Ready", "Core components not initialized or IPC not connected.")
+            return
+        try:
+            if hasattr(self.app, 'core_initialized') and self.app.core_initialized:
+                if hasattr(self, 'script_dropdown') and self.script_dropdown:
+                    selected_file = self.script_dropdown.get()
+                    if selected_file:
+                        script_path = os.path.join("Rules", selected_file)
+                        if self.app.combat_rotation.load_rotation_script(script_path):
+                            self.app.loaded_script_path = selected_file
+                            self.app.log_message(f"Loaded rotation script '{selected_file}' into engine.", "INFO")
+                            messagebox.showinfo("Test Result", "Is Behind test successful!")
+                        else:
+                            messagebox.showerror("Test Error", "Failed to load rotation script.")
+                    else:
+                        messagebox.showerror("Invalid Input", "Please select a rotation file.")
+                else:
+                    messagebox.showerror("Invalid Input", "Script dropdown not initialized.")
+            else:
+                messagebox.showerror("Invalid Input", "Core not initialized.")
+        except ValueError:
+            messagebox.showerror("Invalid Input", "Please enter a valid integer Spell ID.")
+        except Exception as e:
+            error_msg = f"Error during Is Behind test: {e}"
+            self.app.log_message(error_msg, "ERROR")
+            messagebox.showerror("Test Error", error_msg) 

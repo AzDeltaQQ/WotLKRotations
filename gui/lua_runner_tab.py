@@ -8,23 +8,19 @@ if TYPE_CHECKING:
     from gui import WowMonitorApp
 
 
-class LuaRunnerTab:
+class LuaRunnerTab(ttk.Frame):
     """Handles the UI and logic for the Lua Runner Tab."""
 
-    def __init__(self, parent_notebook: ttk.Notebook, app_instance: 'WowMonitorApp'):
+    def __init__(self, parent_notebook: ttk.Notebook, app_instance: 'WowMonitorApp', **kwargs):
         """
         Initializes the Lua Runner Tab.
 
         Args:
-            parent_notebook: The ttk.Notebook widget to attach the tab frame to.
+            parent_notebook: The ttk.Notebook widget this frame will be placed in.
             app_instance: The instance of the main WowMonitorApp.
         """
+        super().__init__(parent_notebook, **kwargs)
         self.app = app_instance
-        self.notebook = parent_notebook
-
-        # Create the main frame for this tab
-        self.tab_frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_frame, text='Lua Runner')
 
         # --- Define Lua Runner specific widgets ---
         self.lua_input_text: Optional[scrolledtext.ScrolledText] = None
@@ -36,7 +32,7 @@ class LuaRunnerTab:
 
     def _setup_ui(self):
         """Creates the widgets for the Lua Runner tab."""
-        main_frame = ttk.Frame(self.tab_frame, padding=10)
+        main_frame = ttk.Frame(self, padding=10)
         main_frame.pack(expand=True, fill=tk.BOTH)
 
         input_frame = ttk.LabelFrame(main_frame, text="Lua Code", padding=10)

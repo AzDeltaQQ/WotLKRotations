@@ -141,6 +141,23 @@ AURA_STRUCT_SPELL_ID_OFFSET = 0x8
 
 PLAYER_COMBO_POINTS_STATIC = 0x00BD084D
 
+# --- Combat Log (Needs RE - Tentative) ---
+COMBAT_LOG_LIST_MANAGER = 0x00ADB974 # Pointer to structure holding list head/tail? (dword_ADB974)
+# Offsets relative to COMBAT_LOG_LIST_MANAGER value (Guessing! Needs Verification)
+COMBAT_LOG_LIST_HEAD_OFFSET = 0x0 # Pointer to first node?
+COMBAT_LOG_LIST_TAIL_OFFSET = 0x4 # Pointer to last node?
+
+COMBAT_LOG_EVENT_NEXT_OFFSET = 0x4 # Offset within a node for the next pointer
+COMBAT_LOG_EVENT_TIMESTAMP_OFFSET = 0x8 # Offset within a node for the timestamp/sequence
+COMBAT_LOG_EVENT_DATA_OFFSET = 0x10 # Tentative start offset for event parameters
+COMBAT_LOG_EVENT_DATA_SIZE = 64 # Tentative size to read for parameters (Needs verification!)
+
+# Pointer potentially related to timestamp/sequence source?
+COMBAT_LOG_TIMESTAMP_SOURCE = 0x00CD76AC # (dword_CD76AC)
+
+# Pointer to the next node to be processed by the game internal systems
+COMBAT_LOG_NEXT_UNPROCESSED_NODE = 0x00CA1394 # (dword_CA1394)
+
 # --- GameObject Specific Offsets (Needs Verification) ---
 # OBJECT_GAMEOBJECT_INFO_PTR = 0x1EC # Removed
 # GAMEOBJECT_INFO_NAME_PTR = 0xB4   # Removed
