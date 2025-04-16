@@ -142,15 +142,18 @@ AURA_STRUCT_SPELL_ID_OFFSET = 0x8
 PLAYER_COMBO_POINTS_STATIC = 0x00BD084D
 
 # --- Combat Log (Needs RE - Tentative) ---
-COMBAT_LOG_LIST_MANAGER = 0x00ADB974 # Pointer to structure holding list head/tail? (dword_ADB974)
-# Offsets relative to COMBAT_LOG_LIST_MANAGER value (Guessing! Needs Verification)
-COMBAT_LOG_LIST_HEAD_OFFSET = 0x0 # Pointer to first node?
-COMBAT_LOG_LIST_TAIL_OFFSET = 0x4 # Pointer to last node?
+COMBAT_LOG_LIST_MANAGER = 0xADB974 # Updated based on AppendCombatLogEntry disassembly (was 0xC704F0)
+# Offsets relative to COMBAT_LOG_LIST_MANAGER value (Based on AppendLinkedListNode analysis 2024-07-19)
+COMBAT_LOG_LIST_HEAD_OFFSET = 0x0 # Offset within manager struct to head pointer (Standard)
+COMBAT_LOG_LIST_TAIL_OFFSET = 0x4 # Offset within manager struct to tail pointer (Verified)
 
-COMBAT_LOG_EVENT_NEXT_OFFSET = 0x4 # Offset within a node for the next pointer
-COMBAT_LOG_EVENT_TIMESTAMP_OFFSET = 0x8 # Offset within a node for the timestamp/sequence
-COMBAT_LOG_EVENT_DATA_OFFSET = 0x10 # Tentative start offset for event parameters
-COMBAT_LOG_EVENT_DATA_SIZE = 64 # Tentative size to read for parameters (Needs verification!)
+# --- Combat Log Event Node Structure - Offsets relative to Node Base Address ---
+# Node Base Address = ESI in AppendCombatLogEntry / New Node Ptr in AppendLinkedListNode
+COMBAT_LOG_EVENT_PREV_OFFSET = 0x0      # Offset within node to previous node pointer (Verified)
+COMBAT_LOG_EVENT_NEXT_OFFSET = 0x4      # Offset within node to next node pointer (Verified)
+COMBAT_LOG_EVENT_TIMESTAMP_OFFSET = 0x8 # Offset within node to timestamp (Verified from handleCombatEvent)
+# COMBAT_LOG_EVENT_DATA_OFFSET = 0xC      # REMOVED - Data starts after node pointers, read whole struct
+# COMBAT_LOG_EVENT_DATA_SIZE = 0x58       # REMOVED - Read based on ctypes.sizeof(CombatLogEventNode)
 
 # Pointer potentially related to timestamp/sequence source?
 COMBAT_LOG_TIMESTAMP_SOURCE = 0x00CD76AC # (dword_CD76AC)
@@ -161,5 +164,17 @@ COMBAT_LOG_NEXT_UNPROCESSED_NODE = 0x00CA1394 # (dword_CA1394)
 # --- GameObject Specific Offsets (Needs Verification) ---
 # OBJECT_GAMEOBJECT_INFO_PTR = 0x1EC # Removed
 # GAMEOBJECT_INFO_NAME_PTR = 0xB4   # Removed
+
+# --- Camera Offsets ---
+CAMERA_BASE_PTR_OFFSET = 0x00C7B5A8
+CAMERA_OFFSET1 = 0x6B04
+CAMERA_OFFSET2 = 0xE8
+CAMERA_PITCH_OFFSET = 0x34
+CAMERA_YAW_OFFSET = 0x30
+
+# --- Unit Fields Cache (CGUnit_C::m_unitValueCache?) - Needs base pointer ---
+# Example: Needs base address to apply offsets like 0x1530 for Level
+
+# --- GUID Management ---
 
     

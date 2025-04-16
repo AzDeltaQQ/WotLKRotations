@@ -177,7 +177,20 @@ class WowMonitorApp:
         # This list holds the rules CURRENTLY IN THE EDITOR, not the engine
         self.rotation_rules: List[Dict[str, Any]] = []
 
-        # --- Instantiate Tab Handlers --- #
+        # --- Initialize Core Components FIRST --- #
+        self.mem: Optional[MemoryHandler] = None
+        self.om: Optional[ObjectManager] = None
+        self.game: Optional[GameInterface] = None
+        self.combat_rotation: Optional[CombatRotation] = None
+        self.target_selector: Optional[TargetSelector] = None
+        self.combat_log_reader: Optional[CombatLogReader] = None
+        self.rotation_running = False
+        self.loaded_script_path = self.config.get('Rotation', 'last_script', fallback=None)
+        self.update_job = None
+        self.is_closing = False
+        self.core_initialized = False # Flag to track if core init succeeded
+
+        # --- Instantiate Tab Handlers (Depend on Core Components / App State) --- #
         # Provide type hints using TYPE_CHECKING block above
         self.monitor_tab_handler: 'MonitorTab' = MonitorTab(self.notebook, self)
         self.rotation_control_tab_handler: 'RotationControlTab' = RotationControlTab(self.notebook, self)
@@ -187,19 +200,6 @@ class WowMonitorApp:
         self.log_tab_handler: 'LogTab' = LogTab(self.notebook, self)
         self.combat_log_tab_handler: 'CombatLogTab' = CombatLogTab(self.notebook, self) # <-- Instantiate CombatLogTab
 
-        # --- Initialize Core Components --- #
-        self.mem: Optional[MemoryHandler] = None
-        self.om: Optional[ObjectManager] = None
-        self.game: Optional[GameInterface] = None
-        self.combat_rotation: Optional[CombatRotation] = None
-        self.target_selector: Optional[TargetSelector] = None
-        self.combat_log_reader: Optional[CombatLogReader] = None # <-- Add instance var
-        self.rotation_running = False
-        # loaded_script_path is likely for config saving, keep it for now
-        self.loaded_script_path = self.config.get('Rotation', 'last_script', fallback=None)
-        self.update_job = None
-        self.is_closing = False
-
         # --- WoW Path --- #
         self.wow_path = self._get_wow_path()
 
@@ -208,7 +208,6 @@ class WowMonitorApp:
         self.stop_rotation_flag = threading.Event()
         self.core_init_attempting = False
         self.last_core_init_attempt = 0.0
-        self.core_initialized = False # Flag to track if core init succeeded
 
         # --- Populate Initial State --- #
         # Dropdown is populated by RotationControlTab init
@@ -339,7 +338,8 @@ class WowMonitorApp:
                 # 1.5 Initialize Combat Log Reader (Needs MemoryHandler)
                 if not self.combat_log_reader:
                     self.log_message(f"{log_prefix} Initializing CombatLogReader...", "DEBUG")
-                    self.combat_log_reader = CombatLogReader(self.mem)
+                    # Pass self (WowMonitorApp instance) for logging
+                    self.combat_log_reader = CombatLogReader(self.mem, self)
                     if self.combat_log_reader.initialized:
                         self.log_message(f"{log_prefix} CombatLogReader initialized.", "INFO")
                     else:
@@ -644,24 +644,22 @@ class WowMonitorApp:
             self.monitor_tab_handler.update_monitor_treeview()
 
         # --- Read and Display Combat Log Entries --- #
-        if core_ready and self.combat_log_reader and self.combat_log_reader.initialized and hasattr(self, 'combat_log_tab_handler'):
+        local_player_found = bool(self.om and self.om.local_player)
+        if core_ready and local_player_found and self.combat_log_reader and self.combat_log_reader.initialized and hasattr(self, 'combat_log_tab_handler'):
+            entries_found = 0
             try:
-                for timestamp, raw_data in self.combat_log_reader.read_new_entries():
-                    # TODO: Implement parsing of raw_data based on event type
-                    # For now, just display timestamp and raw data indication
-                    # Convert raw_data to hex for display if needed
-                    # data_hex = raw_data.hex()[:60] # Show first 30 bytes
-                    placeholder_event = {
-                        "timestamp": timestamp, # Assuming timestamp is readable directly
-                        "event_type": "RAW_DATA",
-                        "source_name": f"Node@{self.combat_log_reader.last_read_node_addr:#x}", # Show node addr
-                        "dest_name": f"{len(raw_data)} bytes"
-                        # Add more fields as parsing develops
-                    }
-                    self.combat_log_tab_handler.log_event(placeholder_event)
+                for timestamp, event_struct in self.combat_log_reader.read_new_entries():
+                    entries_found += 1
+                    self.combat_log_tab_handler.log_event(timestamp, event_struct)
+
+                if entries_found > 0:
+                    self.log_message(f"Processed {entries_found} combat log entries this cycle.", "DEBUG")
             except Exception as e:
                 self.log_message(f"Error reading/processing combat log: {e}", "ERROR")
-                # traceback.print_exc() # Optionally log full traceback
+        elif core_ready and self.om and not local_player_found:
+            self.log_message("Combat log processing skipped: Local player object not yet identified by Object Manager.", "DEBUG")
+        elif not (hasattr(self, 'combat_log_reader') and self.combat_log_reader and self.combat_log_reader.initialized):
+            pass
 
         # --- Final Updates --- #
         self.status_var.set(status_text)

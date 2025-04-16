@@ -14,8 +14,9 @@ if TYPE_CHECKING:
 # --- Log Redirector Class (Moved here) ---
 class LogRedirector:
     """Redirects stdout/stderr to the GUI Log tab using a queue."""
-    def __init__(self, text_widget, default_tag="INFO", tags=None):
+    def __init__(self, text_widget, paused_var, default_tag="INFO", tags=None):
         self.text_widget = text_widget
+        self.paused_var = paused_var # Store the BooleanVar for pausing
         self.default_tag = default_tag
         self.tags = tags or {} # Store tag configurations
         self.stdout_orig = sys.stdout
@@ -39,6 +40,16 @@ class LogRedirector:
             except tk.TclError: pass # Widget might be destroyed
 
     def _process_queue(self):
+        # Check if paused *before* starting processing
+        if self.paused_var and self.paused_var.get():
+            # If paused, simply reschedule if the queue is not empty
+            # This prevents UI updates but keeps the queue processed eventually
+            if self._is_active and not self.queue.empty() and self.text_widget and self.text_widget.winfo_exists():
+                try:
+                    self.text_widget.after(100, self._process_queue) # Check again in 100ms
+                except tk.TclError: pass
+            return # Don't process if paused
+
         if self.processing or not self._is_active or not self.text_widget or not self.text_widget.winfo_exists():
             # Reset processing flag if stopping early
             if self.processing: self.processing = False
@@ -141,6 +152,9 @@ class LogTab(ttk.Frame):
         # self.tab_frame = ttk.Frame(self.notebook) # Use self.tab_frame as the parent for widgets
         # self.notebook.add(self.tab_frame, text='Log')
 
+        # Variable for pausing log output
+        self.paused_var = tk.BooleanVar(value=False)
+
         # --- Define Log specific widgets ---
         self.log_text: Optional[scrolledtext.ScrolledText] = None
         self.log_redirector: Optional[LogRedirector] = None # Will be created here
@@ -151,8 +165,8 @@ class LogTab(ttk.Frame):
         # --- Initialize and start the log redirector ---
         # Must be done *after* log_text widget is created
         if self.log_text:
-            # Pass tag definitions from the app instance
-            self.log_redirector = LogRedirector(self.log_text, tags=self.app.LOG_TAGS)
+            # Pass tag definitions from the app instance and the pause variable
+            self.log_redirector = LogRedirector(self.log_text, self.paused_var, tags=self.app.LOG_TAGS)
             self.log_redirector.start_redirect()
             # Log redirection start message (will appear in the log tab itself now)
             # print("Log redirection started.", file=sys.stdout) # Use standard print - already done by redirector
@@ -176,8 +190,15 @@ class LogTab(ttk.Frame):
         for tag_name, config in self.app.LOG_TAGS.items():
             self.log_text.tag_configure(tag_name, **config)
 
-        clear_log_button = ttk.Button(log_frame, text="Clear Log", command=self.clear_log_text)
-        clear_log_button.grid(row=1, column=0, columnspan=2, pady=(5, 0))
+        # Frame for buttons
+        button_frame = ttk.Frame(log_frame)
+        button_frame.grid(row=1, column=0, columnspan=2, pady=(5, 0))
+
+        clear_log_button = ttk.Button(button_frame, text="Clear Log", command=self.clear_log_text)
+        clear_log_button.pack(side=tk.LEFT, padx=5)
+
+        pause_button = ttk.Checkbutton(button_frame, text="Pause Log", variable=self.paused_var)
+        pause_button.pack(side=tk.LEFT, padx=5)
 
     def clear_log_text(self):
         """Clears all text from the log ScrolledText widget."""
