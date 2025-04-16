@@ -3,6 +3,7 @@ import time
 import logging
 import sys
 from typing import Optional
+import pymem
 
 logger = logging.getLogger(__name__)
 
@@ -345,5 +346,72 @@ class WowObject:
     def __repr__(self):
         # Provide a concise representation, useful for debugging collections
         return f"WowObject(GUID=0x{self.guid:X}, Base=0x{self.base_address:X}, Type={self.type})"
+
+    def has_aura_by_id(self, spell_id_to_find: int) -> bool:
+        """
+        Checks if this object has an aura with the specified spell ID by reading memory directly.
+        Uses the logic derived from the 3.3.5a client's internal functions/structures.
+        Corrected logic based on disassembly analysis for Table 1 vs Table 2.
+        """
+        # print(f"[AuraCheck DEBUG {self.guid:X}] Checking for SpellID {spell_id_to_find}", file=sys.stderr) # DEBUG START - Keep if needed
+
+        if not self.base_address or not self.mem or not self.mem.is_attached() or spell_id_to_find <= 0:
+            # print(f"[AuraCheck DEBUG {self.guid:X}] Pre-check failed (Base: {self.base_address:X}, Mem: {self.mem is not None}, Attached: {self.mem.is_attached() if self.mem else False}, SpellID: {spell_id_to_find})", file=sys.stderr) # DEBUG
+            return False
+
+        aura_count = 0
+        aura_table_base_addr = 0 # Corrected variable name for clarity
+        max_auras_sanity_check = 100 # Reasonable upper limit for auras
+
+        try:
+            # Determine which aura count and table to use based on AURA_COUNT_1
+            count1_addr = self.base_address + offsets.AURA_COUNT_1_OFFSET
+            count1 = self.mem.read_uint(count1_addr)
+            # print(f"[AuraCheck DEBUG {self.guid:X}] Read Count1 from {count1_addr:X}: {count1}", file=sys.stderr) # DEBUG
+
+            if count1 == 0xFFFFFFFF:
+                # Use Table 2 / Count 2 - Logic is pointer-based
+                count2_addr = self.base_address + offsets.AURA_COUNT_2_OFFSET
+                table2_ptr_addr = self.base_address + offsets.AURA_TABLE_2_OFFSET
+                aura_count = self.mem.read_uint(count2_addr)
+                aura_table_base_addr = self.mem.read_uint(table2_ptr_addr) # Read the pointer
+                # print(f"[AuraCheck DEBUG {self.guid:X}] Using Table 2. Count={aura_count} from {count2_addr:X}, TableAddr={aura_table_base_addr:X} from {table2_ptr_addr:X}", file=sys.stderr) # DEBUG
+            else:
+                # Use Table 1 / Count 1 - Logic is direct offset-based
+                aura_count = count1
+                # The base address of the table *is* UnitBase + AURA_TABLE_1_OFFSET
+                aura_table_base_addr = self.base_address + offsets.AURA_TABLE_1_OFFSET
+                # print(f"[AuraCheck DEBUG {self.guid:X}] Using Table 1. Count={aura_count}, TableAddr={aura_table_base_addr:X} (Direct Offset)", file=sys.stderr) # DEBUG
+
+            # Validate count and pointer/address
+            if aura_table_base_addr == 0 or aura_count <= 0 or aura_count > max_auras_sanity_check:
+                # print(f"[AuraCheck DEBUG {self.guid:X}] Validation Failed (Addr: {aura_table_base_addr:X}, Count: {aura_count})", file=sys.stderr) # DEBUG
+                return False # No auras or invalid data
+
+            # Iterate through the aura table
+            # print(f"[AuraCheck DEBUG {self.guid:X}] Iterating {aura_count} auras from table base {aura_table_base_addr:X}...", file=sys.stderr) # DEBUG
+            for i in range(aura_count):
+                aura_struct_addr = aura_table_base_addr + i * offsets.AURA_STRUCT_SIZE
+                spell_id_offset_addr = aura_struct_addr + offsets.AURA_STRUCT_SPELL_ID_OFFSET
+                # Read the Spell ID from the aura structure
+                current_spell_id = self.mem.read_uint(spell_id_offset_addr)
+
+                # Optional: Print details for debugging specific spells
+                # if i < 5 or current_spell_id == spell_id_to_find:
+                #     print(f"[AuraCheck DEBUG {self.guid:X}] Index {i}: Struct@{aura_struct_addr:X}, SpellID@{spell_id_offset_addr:X} -> Found SpellID: {current_spell_id}", file=sys.stderr) # DEBUG
+
+                if current_spell_id == spell_id_to_find:
+                    # print(f"[AuraCheck DEBUG {self.guid:X}] Found matching SpellID {spell_id_to_find} at index {i}", file=sys.stderr) # DEBUG FOUND
+                    return True # Found the aura
+
+        except pymem.exception.MemoryReadError as e:
+            # print(f"[AuraCheck ERROR {self.guid:X}] MemoryReadError: {e}", file=sys.stderr) # DEBUG ERROR
+            return False
+        except Exception as e:
+            # print(f"[AuraCheck ERROR {self.guid:X}] Unexpected Error: {e}", file=sys.stderr) # DEBUG ERROR
+            return False
+
+        # print(f"[AuraCheck DEBUG {self.guid:X}] SpellID {spell_id_to_find} not found after checking {aura_count} auras.", file=sys.stderr) # DEBUG NOT FOUND
+        return False # Aura not found
 
     

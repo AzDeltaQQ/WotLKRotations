@@ -73,10 +73,10 @@ This project uses a two-part architecture:
     *   Available Actions: `Spell`, `Macro` (via Lua), `Lua`.
     *   Available Targets: `target`, `player` (focus, pet, mouseover placeholders).
     *   Available Conditions:
-        *   Simple: `None`, `Target Exists`, `Target Attackable` (basic), `Player Is Casting`, `Target Is Casting`, `Player Is Moving`, `Player Is Stealthed` (placeholder).
+        *   Simple: `None`, `Target Exists`, `Target Attackable` (basic), `Player Is Casting`, `Target Is Casting`, `Player Is Moving`, `Player Is Stealthed` (via Aura ID).
         *   Health/Resource: `Target HP % < X`, `Target HP % > X`, `Target HP % Between X-Y`, `Player HP % < X`, `Player HP % > X`, `Player Rage >= X`, `Player Energy >= X`, `Player Mana % < X`, `Player Mana % > X`, `Player Combo Points >= X` (via IPC).
         *   Distance: `Target Distance < X`, `Target Distance > X`.
-        *   Spell/Aura: `Is Spell Ready` (via IPC), `Target Has Aura` (placeholder), `Target Missing Aura` (placeholder), `Player Has Aura` (placeholder), `Player Missing Aura` (placeholder).
+        *   Spell/Aura: `Is Spell Ready` (via IPC), `Target Has Aura` (via Memory), `Target Missing Aura` (via Memory), `Player Has Aura` (via Memory), `Player Missing Aura` (via Memory).
         *   Position: `Player Is Behind Target` (via IPC).
     *   Condition checks happen *before* cooldown checks for efficiency.
     *   Rules targeting "target" automatically check if a target exists before proceeding.
@@ -143,7 +143,8 @@ This project uses a two-part architecture:
 
 *   Offsets are specific to WoW 3.3.5a (12340).
 *   **Major Refactor Complete:** The DLL has been refactored into multiple C++ files (`ipc_manager`, `command_processor`, `hook_manager`, etc.). Direct Python memory access for game functions/state has been replaced by Named Pipe IPC calls handled by the DLL.
-*   Rotation engine condition checking for Auras, Spell Readiness (resource cost), Player Stealth are still placeholders and need implementation via new IPC commands.
+*   **Aura/Stealth Checks Implemented:** Conditions `Player Has Aura`, `Player Missing Aura`, `Target Has Aura`, `Target Missing Aura`, and `Player Is Stealthed` are now implemented using direct memory reads in Python.
+*   Rotation engine condition checking for Spell Readiness (resource cost) is still needed.
 *   The `is_attackable` check logic may need refinement based on specific unit flags.
 *   Macro execution (`RunMacroText`) is implemented via Lua.
 
@@ -154,11 +155,10 @@ This project uses a two-part architecture:
 
 ## Next Steps (Potential):
 
-1.  Implement Aura and Stealth condition checks via Lua/DLL.
-2.  Add resource checks (Mana/Energy/Rage) to `Is Spell Ready` condition.
-3.  Add more game interaction functions to the DLL (TargetUnit, Interact, etc.).
-4.  Implement reliable GCD tracking (e.g., via Lua `GetSpellCooldown`).
-5.  Refine `is_attackable` logic.
+1.  Implement resource checks (Mana/Energy/Rage) to `Is Spell Ready` condition.
+2.  Add more game interaction functions to the DLL (TargetUnit, Interact, etc.).
+3.  Implement reliable GCD tracking (e.g., via Lua `GetSpellCooldown`).
+4.  Refine `is_attackable` logic.
 
 ### Rotation Editor Tab
 

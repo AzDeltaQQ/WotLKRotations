@@ -677,45 +677,59 @@ class WowMonitorApp:
              logging.exception(f"Unexpected Dist Calc Err: {e}"); return -1.0
 
     def test_player_stealthed(self):
-        """Placeholder for testing player stealth condition."""
-        if not self.is_core_initialized() or not self.game or not self.game.is_ready():
-            messagebox.showwarning("Not Ready", "Core components not initialized or IPC not connected.")
+        """Tests the player stealth condition using has_aura_by_id."""
+        if not self.is_core_initialized() or not self.om or not self.om.local_player:
+            messagebox.showwarning("Not Ready", "Core components not initialized or Player object not found.")
             return
-        if not self.om or not self.om.local_player:
-             messagebox.showwarning("Not Ready", "Player object not found.")
-             return
 
         player = self.om.local_player
-        # Placeholder logic - needs actual check via DLL
-        self.log_message("Testing Player Stealthed (Placeholder)...", "INFO")
-        # Need: result = self.game.is_player_stealthed(player.guid)
-        # Simulate a result for now
-        is_stealthed = False # Assume False
-        messagebox.showinfo("Stealth Check (Placeholder)",
-                          f"Is Player Stealthed? {'Yes' if is_stealthed else 'No'}\n(Requires DLL update for actual check)")
+        stealth_aura_id = 1784 # Standard Stealth aura ID
+        self.log_message(f"Testing Player Stealthed (Checking Aura ID: {stealth_aura_id})...", "INFO")
+
+        try:
+            player.update_dynamic_data(force_update=True) # Ensure latest data for check
+            is_stealthed = player.has_aura_by_id(stealth_aura_id)
+            result_message = f"Is Player Stealthed? {'Yes' if is_stealthed else 'No'}"
+            self.log_message(result_message, "RESULT")
+            messagebox.showinfo("Stealth Check Result", result_message)
+        except Exception as e:
+            error_msg = f"Error during stealth check: {e}"
+            self.log_message(error_msg, "ERROR")
+            traceback.print_exc()
+            messagebox.showerror("Stealth Check Error", error_msg)
 
     def test_player_has_aura(self):
-        """Placeholder for testing player has aura condition."""
-        if not self.is_core_initialized() or not self.game or not self.game.is_ready():
-            messagebox.showwarning("Not Ready", "Core components not initialized or IPC not connected.")
+        """Tests the player has aura condition using has_aura_by_id."""
+        if not self.is_core_initialized() or not self.om or not self.om.local_player:
+            messagebox.showwarning("Not Ready", "Core components not initialized or Player object not found.")
             return
-        if not self.om or not self.om.local_player:
-             messagebox.showwarning("Not Ready", "Player object not found.")
-             return
 
         player = self.om.local_player
-        aura_name_or_id = simpledialog.askstring("Test Player Has Aura",
-                                               "Enter Aura Name or Spell ID:")
-        if not aura_name_or_id:
+        aura_id_str = simpledialog.askstring("Test Player Has Aura",
+                                             "Enter Aura Spell ID:")
+        if not aura_id_str:
             return # User cancelled
 
-        # Placeholder logic - needs actual check via DLL
-        self.log_message(f"Testing Player Has Aura '{aura_name_or_id}' (Placeholder)...", "INFO")
-        # Need: result = self.game.has_aura(player.guid, aura_name_or_id)
-        # Simulate a result for now
-        has_aura = False # Assume False
-        messagebox.showinfo("Aura Check (Placeholder)",
-                          f"Player Has Aura '{aura_name_or_id}'? {'Yes' if has_aura else 'No'}\n(Requires DLL update for actual check)")
+        try:
+            aura_id_to_check = int(aura_id_str)
+            if aura_id_to_check <= 0:
+                 messagebox.showerror("Invalid ID", "Please enter a positive Spell ID.")
+                 return
+
+            self.log_message(f"Testing Player Has Aura ID: {aura_id_to_check}...", "INFO")
+            player.update_dynamic_data(force_update=True) # Ensure latest data
+            has_the_aura = player.has_aura_by_id(aura_id_to_check)
+            result_message = f"Player Has Aura {aura_id_to_check}? {'Yes' if has_the_aura else 'No'}"
+            self.log_message(result_message, "RESULT")
+            messagebox.showinfo("Aura Check Result", result_message)
+
+        except ValueError:
+             messagebox.showerror("Invalid Input", f"'{aura_id_str}' is not a valid integer Spell ID.")
+        except Exception as e:
+            error_msg = f"Error during aura check for ID {aura_id_str}: {e}"
+            self.log_message(error_msg, "ERROR")
+            traceback.print_exc()
+            messagebox.showerror("Aura Check Error", error_msg)
 
     def is_core_initialized(self) -> bool:
         """Checks if all required core components are initialized and ready."""

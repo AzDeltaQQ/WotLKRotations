@@ -16,43 +16,6 @@
 // std::string HandleGetTime(const Request& req);
 // ... etc ...
 
-// --- Worker Thread --- 
-/* // REMOVED Worker Thread Logic
-DWORD WINAPI CommandWorkerThread(LPVOID lpParam) {
-    OutputDebugStringA("[Worker] Thread started.\n");
-    while (g_running) {
-        Request req;
-        {
-            // Wait for a request to process
-            std::unique_lock<std::mutex> lock(g_queueMutex);
-            g_requestCv.wait(lock, [] { return !g_processingQueue.empty() || !g_running; });
-
-            // Check if woken up to exit
-            if (!g_running) {
-                OutputDebugStringA("[Worker] Exiting due to g_running flag.\n");
-                break;
-            }
-
-            // Get the request
-            if (!g_processingQueue.empty()) { 
-                req = g_processingQueue.front();
-                g_processingQueue.pop();
-            } else {
-                 // Spurious wake-up or notified while empty, continue waiting
-                continue; 
-            }
-        } // Unlock mutex
-
-        // Process the command (this queues the response)
-        OutputDebugStringA("[Worker] Processing request...\n");
-        ProcessCommand(req);
-        OutputDebugStringA("[Worker] Finished processing request.\n");
-    }
-    OutputDebugStringA("[Worker] Thread finished.\n");
-    return 0;
-}
-*/
-
 // --- Command Processing Logic --- 
 // Processes a single command and queues the response
 void ProcessCommand(const Request& req) {

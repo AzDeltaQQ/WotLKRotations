@@ -239,9 +239,10 @@ class CombatRotation:
             value_y = condition_data.get("value_y") # Can be None
             value_text = condition_data.get("text") # Can be None
 
-            # --- Evaluate the single condition --- 
+            # --- Evaluate the single condition ---
             # If ANY condition fails, the whole rule fails (return False)
-            if not self._evaluate_single_condition(condition_str, value_x, value_y, value_text, player, target_obj):
+            # Pass the entire 'rule' dictionary here
+            if not self._evaluate_single_condition(condition_str, value_x, value_y, value_text, player, target_obj, rule): # ADDED rule HERE
                 # print(f"[Condition] FAILED: {condition_str} (Values: x={value_x}, y={value_y}, text={value_text})", file=sys.stderr)
                 return False # Exit early
             # else: print(f"[Condition] PASSED: {condition_str}", file=sys.stderr)
@@ -255,13 +256,15 @@ class CombatRotation:
         value_x: Optional[Any],
         value_y: Optional[Any],
         value_text: Optional[str],
-        player: WowObject, # Pass player directly
-        target_obj: Optional[WowObject] # Pass resolved target object
+        player: WowObject,
+        target_obj: Optional[WowObject],
+        rule: Dict[str, Any] # ADDED rule parameter
         ) -> bool:
         """
         Evaluates a single condition string with its parameters.
         Returns True if the condition passes, False otherwise.
         Gracefully handles missing target for target-dependent conditions.
+        Needs the 'rule' context for internal cooldown checks.
         """
         # --- Initial Checks ---
         if condition_str == "None": return True # Always passes
@@ -291,9 +294,8 @@ class CombatRotation:
         if condition_str == "Player Is Moving":
             return player.is_moving
         if condition_str == "Player Is Stealthed":
-             # TODO: Implement stealth check via IPC (e.g., HasAura or specific buff)
-             # self.log("Condition check 'Player Is Stealthed' needs IPC implementation.", "WARN")
-             return False # Placeholder - assume not stealthed
+             # Stealth is Aura ID 1784 in 3.3.5a
+             return player.has_aura_by_id(1784)
         if condition_str == "Player HP % < X":
             if value_x is None: return False
             try: return player.health_percentage < float(value_x)
@@ -334,14 +336,20 @@ class CombatRotation:
             except: return False
         if condition_str == "Player Has Aura":
             if value_text is None: return False
-            # TODO: Implement HasAura check via IPC
-            # self.log(f"Condition check 'Player Has Aura: {value_text}' needs IPC implementation.", "WARN")
-            return False # Placeholder
+            try:
+                spell_id = int(value_text)
+                return player.has_aura_by_id(spell_id)
+            except (ValueError, TypeError):
+                print(f"[ConditionEval] Invalid Spell ID '{value_text}' for Player Has Aura.", file=sys.stderr)
+                return False
         if condition_str == "Player Missing Aura":
              if value_text is None: return False
-             # TODO: Implement HasAura check via IPC
-             # self.log(f"Condition check 'Player Missing Aura: {value_text}' needs IPC implementation.", "WARN")
-             return True # Placeholder (assume missing)
+             try:
+                 spell_id = int(value_text)
+                 return not player.has_aura_by_id(spell_id)
+             except (ValueError, TypeError):
+                 print(f"[ConditionEval] Invalid Spell ID '{value_text}' for Player Missing Aura.", file=sys.stderr)
+                 return False # Fail if invalid ID
 
         # --- TARGET-RELATED CHECKS (Only if target_obj exists) ---
         # We already checked target_obj is not None for these conditions at the top
@@ -397,14 +405,22 @@ class CombatRotation:
              except: return False
         if condition_str == "Target Has Aura":
              if value_text is None: return False
-             # TODO: Implement HasAura check via IPC for target
-             # self.log(f"Condition check 'Target Has Aura: {value_text}' needs IPC implementation.", "WARN")
-             return False # Placeholder
+             try:
+                 spell_id = int(value_text)
+                 # Call has_aura_by_id on the target object
+                 return target_obj.has_aura_by_id(spell_id)
+             except (ValueError, TypeError):
+                 print(f"[ConditionEval] Invalid Spell ID '{value_text}' for Target Has Aura.", file=sys.stderr)
+                 return False
         if condition_str == "Target Missing Aura":
              if value_text is None: return False
-             # TODO: Implement HasAura check via IPC for target
-             # self.log(f"Condition check 'Target Missing Aura: {value_text}' needs IPC implementation.", "WARN")
-             return True # Placeholder (assume missing)
+             try:
+                 spell_id = int(value_text)
+                 # Call has_aura_by_id on the target object and negate
+                 return not target_obj.has_aura_by_id(spell_id)
+             except (ValueError, TypeError):
+                 print(f"[ConditionEval] Invalid Spell ID '{value_text}' for Target Missing Aura.", file=sys.stderr)
+                 return False # Fail if invalid ID
         if condition_str == "Player Is Behind Target":
              # Needs IPC call
              if not self.game or not self.game.is_ready() or not target_obj.guid: return False
@@ -425,11 +441,11 @@ class CombatRotation:
                     return False # On game cooldown
 
                 # Check internal cooldown (based on last execution from this engine)
-                internal_cd = rule.get("cooldown", 0.0) # Need rule context here... Pass rule?
+                internal_cd = rule.get("cooldown", 0.0) # This line is now valid
                 if spell_id in self.last_spell_executed_time:
                      last_exec_time = self.last_spell_executed_time[spell_id]
                      time_since_exec = time.time() - last_exec_time
-                     if time_since_exec < internal_cd:
+                     if internal_cd > 0 and time_since_exec < internal_cd: # Check internal_cd > 0
                          # print(f"[ConditionEval] Spell {spell_id} on internal CD ({time_since_exec:.1f}s < {internal_cd:.1f}s).", file=sys.stderr)
                          return False # On internal cooldown
 
